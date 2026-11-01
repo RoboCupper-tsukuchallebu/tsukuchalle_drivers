@@ -4,9 +4,11 @@
 Examples:
     ddt_bridge.py /dev/cu.usbmodem1101 monitor
     ddt_bridge.py /dev/cu.usbmodem1101 run 20 -20 --seconds 3
+    ddt_bridge.py /dev/cu.usbmodem1101 sweep 1 30 --ramp-seconds 6
 """
 
 import argparse
+import fcntl
 import os
 import select
 import struct
@@ -14,6 +16,7 @@ import sys
 import termios
 import time
 import tty
+from collections.abc import Callable
 from dataclasses import dataclass
 
 HEADER = b"\xaa\x55"
@@ -48,7 +51,7 @@ ERROR_NAMES = {
 COMMAND_PERIOD_SECONDS = 0.02
 ARMING_WAIT_SECONDS = 1.0
 STOP_WAIT_SECONDS = 1.0
-MAX_VELOCITY_RPM = 30  # Keep equal to firmware/src/bridge_controller.hpp
+MAX_VELOCITY_RPM = 210  # Keep equal to firmware/src/bridge_controller.hpp
 
 
 def crc16(data: bytes) -> int:
@@ -115,6 +118,8 @@ class Bridge:
     def __init__(self, port: str):
         self._file_descriptor = os.open(port, os.O_RDWR | os.O_NOCTTY | os.O_NONBLOCK)
         os.set_blocking(self._file_descriptor, True)  # Reads are gated by select().
+        # A second process on this port would steal bytes and mix commands.
+        fcntl.ioctl(self._file_descriptor, termios.TIOCEXCL)
         tty.setraw(self._file_descriptor)
         termios.tcflush(self._file_descriptor, termios.TCIOFLUSH)
         self._buffer = bytearray()
@@ -135,7 +140,10 @@ class Bridge:
     def poll(self, timeout_seconds: float) -> None:
         readable, _, _ = select.select([self._file_descriptor], [], [], timeout_seconds)
         if readable:
-            self._buffer += os.read(self._file_descriptor, 4096)
+            data = os.read(self._file_descriptor, 4096)
+            if not data:
+                raise OSError("board disconnected")
+            self._buffer += data
         for message_type, payload in decode_frames(self._buffer):
             self._handle(message_type, payload)
 
@@ -153,14 +161,21 @@ class Bridge:
         elif message_type == TYPE_STATUS and len(payload) == 2:
             self._on_status(payload[0], payload[1])
         elif message_type == TYPE_ERROR and len(payload) == 1:
-            print(f"ERROR: {ERROR_NAMES.get(payload[0], payload[0])}", file=sys.stderr)
+            self.on_error(payload[0])
 
     def _on_status(self, state: int, stop_reason: int) -> None:
-        if state != self.state or stop_reason != self.stop_reason:
-            print(f"state={STATE_NAMES.get(state, state)} "
-                  f"stop_reason={STOP_REASONS.get(stop_reason, stop_reason)}")
+        is_changed = state != self.state or stop_reason != self.stop_reason
         self.state = state
         self.stop_reason = stop_reason
+        if is_changed:
+            self.on_status_changed(state, stop_reason)
+
+    def on_status_changed(self, state: int, stop_reason: int) -> None:
+        print(f"state={STATE_NAMES.get(state, state)} "
+              f"stop_reason={STOP_REASONS.get(stop_reason, stop_reason)}")
+
+    def on_error(self, error_code: int) -> None:
+        print(f"ERROR: {ERROR_NAMES.get(error_code, error_code)}", file=sys.stderr)
 
     def on_feedback(self, feedback: Feedback) -> None:
         pass
@@ -180,7 +195,15 @@ class PrintingBridge(Bridge):
             print(feedback)
 
 
-def run_motors(bridge: Bridge, first_rpm: int, second_rpm: int, seconds: float) -> int:
+def sweep_rpm(elapsed_seconds: float, low_rpm: int, high_rpm: int, ramp_seconds: float) -> int:
+    """Target that ramps from low to high and back, taking ramp_seconds each way."""
+    distance_from_peak = abs(elapsed_seconds - ramp_seconds)
+    progress = max(0.0, 1.0 - distance_from_peak / ramp_seconds)
+    return round(low_rpm + (high_rpm - low_rpm) * progress)
+
+
+def run_motors(bridge: Bridge, rpm_at: Callable[[float], tuple[int, int]], seconds: float) -> int:
+    """Drive both motors with rpm_at(elapsed_seconds), then always stop them."""
     bridge.poll(0.2)
     bridge.send(TYPE_ENABLE)
     if not bridge.wait_for_state(STATE_ACTIVE, ARMING_WAIT_SECONDS):
@@ -188,9 +211,9 @@ def run_motors(bridge: Bridge, first_rpm: int, second_rpm: int, seconds: float) 
         bridge.send(TYPE_DISABLE)
         return 1
     try:
-        deadline = time.monotonic() + seconds
-        while time.monotonic() < deadline:
-            bridge.set_velocity(first_rpm, second_rpm)
+        start = time.monotonic()
+        while (elapsed := time.monotonic() - start) < seconds:
+            bridge.set_velocity(*rpm_at(elapsed))
             bridge.poll(COMMAND_PERIOD_SECONDS)
             if bridge.state != STATE_ACTIVE:
                 print("bridge left ACTIVE", file=sys.stderr)
@@ -226,13 +249,27 @@ def main() -> int:
     run_parser.add_argument("first_rpm", type=rpm_argument)
     run_parser.add_argument("second_rpm", type=rpm_argument)
     run_parser.add_argument("--seconds", type=float, default=2.0)
+    sweep_parser = commands.add_parser("sweep", help="ramp both motors low->high->low, then stop")
+    sweep_parser.add_argument("low_rpm", type=rpm_argument)
+    sweep_parser.add_argument("high_rpm", type=rpm_argument)
+    sweep_parser.add_argument("--ramp-seconds", type=float, default=6.0, help="time for each way")
     arguments = parser.parse_args()
+    if arguments.command == "sweep" and arguments.ramp_seconds <= 0:
+        parser.error("--ramp-seconds must be positive")
 
     bridge = PrintingBridge(arguments.port)
     try:
         if arguments.command == "monitor":
             return monitor(bridge)
-        return run_motors(bridge, arguments.first_rpm, arguments.second_rpm, arguments.seconds)
+        if arguments.command == "sweep":
+            def sweep_both(elapsed: float) -> tuple[int, int]:
+                rpm = sweep_rpm(elapsed, arguments.low_rpm, arguments.high_rpm,
+                                arguments.ramp_seconds)
+                return rpm, rpm
+
+            return run_motors(bridge, sweep_both, arguments.ramp_seconds * 2)
+        return run_motors(bridge, lambda _: (arguments.first_rpm, arguments.second_rpm),
+                          arguments.seconds)
     except KeyboardInterrupt:
         return 0
     finally:

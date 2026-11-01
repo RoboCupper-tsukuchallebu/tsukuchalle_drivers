@@ -1,7 +1,39 @@
+import os
 import struct
 import unittest
 
-from ddt_bridge import TYPE_FEEDBACK, TYPE_STATUS, crc16, decode_frames, encode_frame, parse_feedback
+from ddt_bridge import (
+    Bridge,
+    TYPE_FEEDBACK,
+    TYPE_STATUS,
+    crc16,
+    decode_frames,
+    encode_frame,
+    parse_feedback,
+    sweep_rpm,
+)
+
+
+class DisconnectTest(unittest.TestCase):
+    def test_poll_raises_when_the_port_reports_end_of_file(self):
+        read_end, write_end = os.pipe()
+        self.addCleanup(os.close, read_end)
+        os.close(write_end)
+        bridge = Bridge.__new__(Bridge)
+        bridge._file_descriptor = read_end
+        bridge._buffer = bytearray()
+        with self.assertRaises(OSError):
+            bridge.poll(0.0)
+
+
+class SweepTest(unittest.TestCase):
+    def test_ramps_up_and_back_down_within_limits(self):
+        self.assertEqual(sweep_rpm(0.0, 1, 30, 6.0), 1)
+        self.assertEqual(sweep_rpm(6.0, 1, 30, 6.0), 30)
+        self.assertEqual(sweep_rpm(12.0, 1, 30, 6.0), 1)
+        self.assertEqual(sweep_rpm(3.0, 1, 30, 6.0), sweep_rpm(9.0, 1, 30, 6.0))
+        for step in range(0, 1300):
+            self.assertTrue(1 <= sweep_rpm(step / 100, 1, 30, 6.0) <= 30)
 
 
 class ProtocolTest(unittest.TestCase):

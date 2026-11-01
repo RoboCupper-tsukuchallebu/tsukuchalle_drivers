@@ -1,0 +1,20 @@
+diff_drive_node:
+  ros__parameters:
+    # Empty: use the only connected board. Port names change when replugged.
+    port: ""
+
+    # Geometry.
+    wheel_radius_m: 0.0935  # From the catalog diameter of 187 mm. Measure under load.
+    track_width_m: 0.4      # PLACEHOLDER: turn rates are wrong until this is measured.
+
+    # Wheel assignment. Check with the wheels lifted; cannot change while enabled.
+    left_motor_id: 1
+    left_sign: 1
+    right_sign: -1
+
+    # Limits. The motors are rated for 115 rpm; the firmware allows up to 210 rpm.
+    max_wheel_rpm: 100.0
+    max_acceleration_rpm_per_s: 100.0
+
+    # Targets fall to zero when /cmd_vel is silent for this long.
+    command_timeout_s: 0.5

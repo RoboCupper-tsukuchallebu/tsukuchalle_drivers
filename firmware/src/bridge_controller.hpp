@@ -9,8 +9,8 @@
 
 namespace bridge {
 
-// Tuning knobs. The motor's own limit is 210 rpm; raise this after bench verification.
-inline constexpr std::int16_t MAX_VELOCITY_RPM = 30;
+// Tuning knobs. 210 rpm is the full range of the motor's velocity command.
+inline constexpr std::int16_t MAX_VELOCITY_RPM = 210;
 inline constexpr std::uint32_t DISABLED_REFRESH_PERIOD_MS = 100;
 inline constexpr std::uint32_t COMMAND_TIMEOUT_MS = 200;
 inline constexpr std::uint32_t FEEDBACK_TIMEOUT_MS = 100;

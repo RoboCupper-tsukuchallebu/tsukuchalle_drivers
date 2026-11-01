@@ -1,0 +1,21 @@
+[workspace]
+name = "ddt-can-bridge"
+channels = ["https://prefix.dev/robostack-jazzy", "https://prefix.dev/conda-forge"]
+platforms = ["osx-arm64"]
+
+[dependencies]
+ros-jazzy-ros-base = "*"
+ros-jazzy-teleop-twist-keyboard = "*"
+colcon-common-extensions = "*"
+setuptools = "*"
+
+[activation]
+scripts = ["install/local_setup.sh"]
+# Domain 0 (UDP 7400) is held by Docker Desktop on this Mac.
+env = { ROS_DOMAIN_ID = "42" }
+
+[tasks]
+build = "colcon build --base-paths ros2"
+test = { cmd = "python -m unittest discover -s ros2/ddt_diff_drive/test -v", depends-on = ["build"] }
+drive = "ros2 run ddt_diff_drive diff_drive_node --ros-args --params-file ros2/ddt_diff_drive/config/diff_drive.yaml"
+teleop = "ros2 run teleop_twist_keyboard teleop_twist_keyboard"

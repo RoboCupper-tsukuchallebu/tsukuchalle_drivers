@@ -53,6 +53,43 @@ python3 host/ddt_bridge.py /dev/cu.usbmodemXXXX monitor
 python3 host/ddt_bridge.py /dev/cu.usbmodemXXXX run 10 10 --seconds 2
 ```
 
+## ROS 2
+
+`/cmd_vel`（`geometry_msgs/Twist`）を左右の車輪速度へ変換するノードです。ROS 2 JazzyをRoboStack（pixi）で動かします。
+
+```sh
+pixi install
+pixi run test                 # ビルドしてテスト。コード変更後も実行
+
+pixi run drive                # ノード起動。この時点ではモーターは無効
+```
+
+別のターミナルで操作します。別のターミナルでも必ず `pixi run` か `pixi shell` を使います（ROSドメインIDを揃えるため）。
+
+```sh
+# 有効化（false で停止）
+pixi run ros2 service call /diff_drive_node/enable std_srvs/srv/SetBool "{data: true}"
+
+# キーボード操作
+pixi run teleop
+
+# パラメータの変更例
+pixi run ros2 param set /diff_drive_node max_wheel_rpm 50.0
+```
+
+| パラメータ | 初期値 | 内容 |
+|---|---|---|
+| `port` | 空 | 空なら接続中の基板を自動検出（2枚以上ならエラー）。起動時のみ |
+| `wheel_radius_m` | 0.0935 | 車輪半径。カタログ直径187mmから算出 |
+| `track_width_m` | 0.4 | **仮値。** 左右の車輪間隔を実測して設定 |
+| `left_motor_id` | 1 | 左車輪のモーターID。もう一方が右。有効化中は変更不可 |
+| `left_sign` / `right_sign` | 1 / -1 | 前進時の回転方向。有効化中は変更不可 |
+| `max_wheel_rpm` | 100.0 | 車輪の最大速度（上限210）。飽和時は左右の比を保つ |
+| `max_acceleration_rpm_per_s` | 100.0 | 加減速の制限 |
+| `command_timeout_s` | 0.5 | `/cmd_vel` が途絶えたら目標を0へ（上限5秒）。減速は200rpm/s以上 |
+
+ノードは実行中の変更を受け付けますが、ファイルには保存しません。確定した値は `ros2/ddt_diff_drive/config/diff_drive.yaml` に書いてください。`pixi run drive` はこのファイルを直接読みます。
+
 ## 安全動作
 
 - **基板はUSB給電のため、USBが抜けると停止処理を実行できません。24Vをすぐ遮断できる非常停止を用意してください。**
@@ -60,5 +97,5 @@ python3 host/ddt_bridge.py /dev/cu.usbmodemXXXX run 10 10 --seconds 2
 - 指令200ms途絶、フィードバック100ms途絶、モーター故障、速度モード離脱、CAN送信失敗で、速度0を500ms送ってから無効化します。
 - 停止後に自動復帰はしません。
 - ファームが停止した場合は100msのウォッチドッグでリセットします。
-- 速度上限は検証前のため30rpmです（ファームと`host/ddt_bridge.py`の両方で定義）。
+- 速度上限はモーターの指令範囲いっぱいの210rpmです（ファームと`host/ddt_bridge.py`の両方で定義）。定格は115rpmです。
 - 上限速度などの調整値は `firmware/src/bridge_controller.hpp` にあります。

@@ -1,0 +1,16 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>ddt_diff_drive</name>
+  <version>0.1.0</version>
+  <description>Differential drive node for two DDT motors behind the RP2350-CAN bridge.</description>
+  <maintainer email="katsu2yukkuri@gmail.com">Nyanziba</maintainer>
+  <license>UNLICENSED</license>
+
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>std_srvs</exec_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>
