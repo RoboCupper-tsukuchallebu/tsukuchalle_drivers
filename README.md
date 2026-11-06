@@ -105,6 +105,7 @@ pixi run ros2 param set /diff_drive_node max_wheel_rpm 50.0
 | `joy_disable_button` | 6 | このボタンを押すと無効化（Back を仮定）。常に効く。`joy_enable_button` が 0 以上なら -1 不可 |
 | `joy_deadman_button` | 0 | `teleop_twist_joy.yaml` の `enable_button` と同じ番号にする。押している間は有効化しない |
 | `joy_neutral_axes` | `[0, 1]` | 有効化時に中立（絶対値 0.1 以下）を要求する軸。`teleop_twist_joy.yaml` の `axis_linear.x`・`axis_angular.yaw` と同じ番号にする |
+| `auto_reenable_wait_s` | 10.0 | USB 切断から復帰した後、デッドマンが離されスティックが中立になるのを待つ最大秒数。超えたら無効のまま。`joy_node` の `autorepeat_rate` が 0 より大きいことが前提（0 だと操作していない間 `/joy` が来ず、必ず諦める） |
 
 3つのボタン番号は互いに異なる必要があります。最初に届いた `/joy`、および 0.5 秒以上途絶えた後の最初の `/joy` は、有効化の「押した瞬間」とみなしません（Start を押したまま `joy` を再起動したり、パッドを挿し直したりしても有効化されません。無効化は途絶後でも効きます）。この判定は `joy_node` の `autorepeat_rate` が 0 より大きいことが前提です（初期値は 20 Hz）。`joy_deadman_button: -1` や `joy_neutral_axes: []` にすると、その確認は黙って外れます。無効化の後は、基板が `DISABLED` になるまで `/cmd_vel` を捨て、`DISABLE` を送り直し、1.5 秒たっても `DISABLED` にならなければ `disable not confirmed` を ERROR で出します。
 
@@ -127,9 +128,12 @@ scripts/deploy.sh <ロボットのSSH先>
 ### 起動（ロボット PC の `~/ddt-can-bridge/`）
 
 ```sh
-export DDT_SERIAL_DEVICE=/dev/serial/by-id/usb-...   # 省略時は /dev/ttyACM0
+# 初回だけ。.env は compose が自動で読むので、別のシェルや再ログインの後でも ps・down・logs・exec が通る
+echo 'DDT_SERIAL_DEVICE=/dev/serial/by-id/usb-...' > ~/ddt-can-bridge/.env
 docker compose up -d drive joy teleop                # この時点ではモーターは無効
 ```
+
+`DDT_SERIAL_DEVICE` は必須で、未設定だと **`down`・`ps`・`logs` を含む compose のすべてのコマンド**が `required variable DDT_SERIAL_DEVICE is missing` で止まります（`.env` か `export` のどちらかで設定してください）。`scripts/deploy.sh` が送るのは `compose.yaml` と `config/` だけで、`.env` は上書きも削除もしません。`.env` はリポジトリには置きません（`.gitignore` 済み）。
 
 動かすには車輪を浮かせて、パッドで有効化します（コンテナの起動では有効化しません）。**Start で有効化、Back で無効化**します（ボタン番号は下の `/joy` で確認）。デッドマン（A）を離し、左スティックを中立に戻してから Start を押してください。そうでないと `enable ignored: ...` の警告が出て有効化しません。
 
@@ -154,8 +158,9 @@ docker compose run --rm teleop-keyboard
 
 - ボタン・軸の番号が違うパッドは、`docker compose exec joy /ws/ros2/docker-entrypoint.sh ros2 topic echo /joy` で確認して `config/teleop_twist_joy.yaml` を直し、`docker compose up -d --force-recreate teleop` で反映します。Start・Back・デッドマンの番号と中立を見る軸は `ros2/ddt_diff_drive/config/diff_drive.yaml`（`joy_*`）にもあるので、**両方を同じ番号に直してください**（片方だけ直すと、有効化の誤操作防止が黙って効かなくなります）。`diff_drive.yaml` は `drive` のイメージに焼き込まれているので、`teleop` の `--force-recreate` だけでは反映されません。ビルド機で `scripts/deploy.sh <ロボットのSSH先>` を実行してイメージを作り直して送り、ロボット PC で `docker compose up -d drive` します。反映後は `docker compose exec drive /ws/ros2/docker-entrypoint.sh ros2 param get /diff_drive_node joy_deadman_button` で値を確かめてください。初期値は 0.6 m/s、1.5 rad/s です（2026-11-06 に車輪を浮かせた試験と地面での走行で確認し、0.3 m/s、1.0 rad/s から引き上げ）。**初めて走らせるロボットや床では、スティックを浅く倒して低速で確かめてください。** A を離してから止まるまで、最高速から約 0.8 秒（約 0.3 m）かかります。
 - `joy` は `/dev/input` を丸ごと読めるため、コンテナ内からホストのキーボード入力も読めます。専用のロボット PC を前提にしています。
-- USBを抜き差ししたり、基板がリセットしたりしたら、`drive` はコンテナごと終了します（再起動しません）。挿し直して `docker compose up -d drive` で復帰します。`devices:` は作成時に固定されるためです。基板が無いと `drive` はコンテナ作成時に失敗します。
-- ModemManager が動いていると、挿した直後の `ttyACM` に AT コマンドを送ることがあります。ノードの排他ロック（TIOCEXCL）は open 後にしか効きません。`mmcli -L` と `journalctl -u ModemManager` で確認し、症状が出たら `sudo systemctl mask --now ModemManager` してください。
+- USB を抜き差ししたり、基板がリセットしたりしても、`drive` は終了せず、ノードが基板を開き直します（`lost the board` は ERROR、`board reconnected` は WARN で、累計回数つきで毎回ログに出ます。回数の上限はありません）。有効だったときは、デッドマン（A）が離されスティックが中立になってから自動で再有効化します（`auto re-enabled after board reconnect`）。`auto_reenable_wait_s`（10 秒）以内に中立にならないと `auto re-enable abandoned` を出して無効のままになるので、Start で有効化してください。切断中に Back（または `data: false`）を押すと、再有効化は取り消されます。`joy_node` の `autorepeat_rate` を 0 にすると中立を判定できず、必ず諦めます。ファーム側の停止（`feedback lost` など）からは自動復帰しません。なお起動時に基板が無いと、`drive` は従来どおり終了します。
+- `DDT_SERIAL_DEVICE` は `/dev/serial/by-id/usb-...` を指定してください。`/dev/ttyACM0` を固定で指定すると、再列挙で `ttyACM1` になったときに永久に再接続できません。`drive` は `/dev` を丸ごと見る（`devices:` は作成時に固定され、再列挙に追従できないため）ので、`joy` と同様に専用のロボット PC を前提にしています。`/dev` は再帰的に見えるため、ホストの `/dev/pts`・`/dev/ptmx` にもコンテナの root から届きます。
+- ModemManager が動いていると、挿した直後の `ttyACM` に AT コマンドを送ることがあります。ノードの排他ロック（TIOCEXCL）は open 後にしか効きません。`mmcli -L` と `journalctl -u ModemManager` で確認し、症状が出たら `sudo systemctl mask --now ModemManager` してください。再列挙のたびにプローブされると、再接続が `EBUSY` になったり、AT コマンドが基板に流れたりします。`reconnect failed` が続くときも mask してください。
 
 ### ROS 2 の通信範囲
 
@@ -168,7 +173,7 @@ docker compose run --rm teleop-keyboard
 - **基板はUSB給電のため、USBが抜けると停止処理を実行できません。24Vをすぐ遮断できる非常停止を用意してください。**
 - 基板はDISABLED中、0指令と無効化を100ms周期で送り続け、明示的なENABLEまで動かしません。
 - 指令200ms途絶、フィードバック100ms途絶、モーター故障、速度モード離脱、CAN送信失敗で、速度0を500ms送ってから無効化します。
-- 停止後に自動復帰はしません。
+- ファームが止めた後に自動復帰はしません。USB 切断からの復帰はノードが行い、スティックとデッドマンが離されてから再有効化します。回数上限は無く、ログで確認してください。
 - ファームが停止した場合は100msのウォッチドッグでリセットします。
 - 速度上限はモーターの指令範囲いっぱいの210rpmです（ファームと`host/ddt_bridge.py`の両方で定義）。定格は115rpmです。
 - 上限速度などの調整値は `firmware/src/bridge_controller.hpp` にあります。
