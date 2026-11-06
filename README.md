@@ -7,26 +7,40 @@ M1502A 2台を無負荷、10rpm、2秒で駆動して動作を確認しました
 
 ## 必要なもの
 
-- Pico SDK 2.3.1（`PICO_SDK_PATH`）、CMake、Ninja、arm-none-eabi-gcc
-- Python 3.10以上（追加ライブラリなし。macOS/Linuxのみ）
+- DockerとGNU make（Pico SDK、picotool、arm-none-eabi-gcc、CMake、Ninjaはイメージに入っています）
+- 「使い方」でホストから基板を操作するにはPython 3.10以上（追加ライブラリなし。macOS/Linuxのみ）
+- ビルド・テストをDockerなしで行う場合は「Dockerを使わない場合」を参照
 
 ## テスト
+
+```sh
+make test    # tests/ のctest（ASan/UBSan）と host/ のunittest
+```
+
+## ビルド
+
+```sh
+make         # test と firmware
+make firmware
+```
+
+初回は `make image` でイメージ（Arm GNU Toolchain 13.3.Rel1、Pico SDK 2.3.1、picotool 2.3.1）をビルドします。ネットワークを使うのはこのときだけで、`make test` と `make firmware` は `--network none` で動きます。成果物は `build/docker/firmware/ddt_can_bridge.uf2` です。
+
+BOOTボタンを押しながらUSB接続し、出てきたドライブに `.uf2` をコピーします。
+
+### Dockerを使わない場合
+
+Pico SDK 2.3.1（`PICO_SDK_PATH`）、CMake、Ninja、arm-none-eabi-gcc（13.3.rel1）、Python 3.10以上が必要です。
 
 ```sh
 cmake -S tests -B build/tests -G Ninja
 cmake --build build/tests
 ctest --test-dir build/tests --output-on-failure
 (cd host && python3 -m unittest)
-```
 
-## ビルド
-
-```sh
 cmake -S firmware -B build/firmware -G Ninja
-cmake --build build/firmware
+cmake --build build/firmware    # build/firmware/ddt_can_bridge.uf2
 ```
-
-BOOTボタンを押しながらUSB接続し、出てきたドライブに `build/firmware/ddt_can_bridge.uf2` をコピーします。
 
 ## 配線
 
