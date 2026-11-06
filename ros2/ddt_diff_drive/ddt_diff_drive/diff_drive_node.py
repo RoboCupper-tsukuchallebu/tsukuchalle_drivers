@@ -47,7 +47,7 @@ STATE_WAIT_S = 1.5
 PORT_PATTERNS = ("/dev/cu.usbmodem*", "/dev/ttyACM*")
 WIRING_PARAMETERS = {"left_motor_id", "left_sign", "right_sign"}
 DRIVE_PARAMETERS = {
-    "wheel_radius_m": 0.0935,
+    "wheel_radius_m": 0.10,
     "track_width_m": 0.26,
     "left_motor_id": 1,
     "left_sign": 1,
