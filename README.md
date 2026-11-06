@@ -106,10 +106,30 @@ pixi run ros2 param set /diff_drive_node max_wheel_rpm 50.0
 | `joy_deadman_button` | 0 | `teleop_twist_joy.yaml` の `enable_button` と同じ番号にする。押している間は有効化しない |
 | `joy_neutral_axes` | `[0, 1]` | 有効化時に中立（絶対値 0.1 以下）を要求する軸。`teleop_twist_joy.yaml` の `axis_linear.x`・`axis_angular.yaw` と同じ番号にする |
 | `auto_reenable_wait_s` | 10.0 | USB 切断から復帰した後、デッドマンが離されスティックが中立になるのを待つ最大秒数。超えたら無効のまま。`joy_node` の `autorepeat_rate` が 0 より大きいことが前提（0 だと操作していない間 `/joy` が来ず、必ず諦める） |
+| `publish_tf` | true | TF `odom` → `base_footprint` を出す。実行中に変更可（bool 以外は拒否）。`/wheel/odom` は常に出す |
 
 3つのボタン番号は互いに異なる必要があります。最初に届いた `/joy`、および 0.5 秒以上途絶えた後の最初の `/joy` は、有効化の「押した瞬間」とみなしません（Start を押したまま `joy` を再起動したり、パッドを挿し直したりしても有効化されません。無効化は途絶後でも効きます）。この判定は `joy_node` の `autorepeat_rate` が 0 より大きいことが前提です（初期値は 20 Hz）。`joy_deadman_button: -1` や `joy_neutral_axes: []` にすると、その確認は黙って外れます。無効化の後は、基板が `DISABLED` になるまで `/cmd_vel` を捨て、`DISABLE` を送り直し、1.5 秒たっても `DISABLED` にならなければ `disable not confirmed` を ERROR で出します。
 
 ノードは実行中の変更を受け付けますが、ファイルには保存しません。確定した値は `ros2/ddt_diff_drive/config/diff_drive.yaml` に書いてください。`pixi run drive` はこのファイルを直接読みます。
+
+## 車輪オドメトリ
+
+モーターのフィードバック rpm（指令値ではない）から `/wheel/odom`（`nav_msgs/Odometry`）と TF `odom` → `base_footprint` を 50 Hz で出します。IMU は無いので yaw はドリフトします。LiDAR・GPS との融合は lightweight-nav-stack 側の担当です。
+
+- フレーム: `header.frame_id = odom`、`child_frame_id = base_footprint`。`base_footprint` → `base_link` は `tsukuchalle_description` の `robot_state_publisher` が出します。twist は `base_footprint` 上の `linear.x`（前進が正）と `angular.z`（左回りが正）です。
+- 積分はフィードバックを受け取るたびに行い（`poll` の時刻。通常は制御タイマの 50 Hz でまとめて、`~/enable` のブロック中は `poll(0.02)` でほぼフレームごと）、左右それぞれの最新 rpm を中点法で積分します。出版は制御タイマ（50 Hz）で、前回の出版以降に積分が 1 回以上あれば出します。無効化（DISABLED）中でも 24V が入っていれば出ます（手で押した移動も積分します）。静止中も出ます。
+- 原点はノード起動時の位置です。USB 再接続や再有効化ではリセットしません。
+- 途絶: 左右どちらかのフィードバックが 0.1 秒来ないと積分と出版を止め（`wheel odometry paused`）、再開すると `wheel odometry resumed` を出します。止まっていた間の移動は失われます。nav-stack は 0.2 秒で `INPUT_STALE` にします。
+- 姿勢は実際の車体より 20〜30 ms 程度古い（USB 1 段 ＋ poll 間隔 20 ms ＋ フレーム間隔 10 ms）。
+- 共分散: twist は 1 rpm の量子化（片輪 q = 2π·r/60）から `σ_v = q/√2 + 0.02|v|`、`σ_w = √2·q/W + 0.10|w|`。pose は積分で増える名目値です。**nav-stack の車輪因子はこの共分散を読みません**（因子のノイズは nav-stack 側のパラメータ）。
+
+既知の制限:
+
+- `~/enable` は最大 1.5 秒ブロックします（走行中の `false` はファームの STOPPING 0.5 秒を待つので約 0.6 秒）。その間は姿勢の積分は続きますが出版が止まります。パッド（Start / Back）はブロックしません。
+- 制御タイマが 0.1 秒を超えて遅れると、その間の移動は失われます。
+- 1 rpm 刻みなので、0.1 m/s 未満では速度の相対誤差が 10 % 級です。
+
+`track_width_m` の校正: その場で車体を実角度 θ_true（例: 床のマークで 1 回転 = 2π）だけ回し、`/wheel/odom` の yaw を積算した値 θ_odom を読みます（回転の途中で ±π を跨ぐので、差分を足し合わせる）。補正後のトレッドは `track_width_m × θ_odom / θ_true` です。値は `tsukuchalle_description` の `config/dimensions.yaml` を先に直し、本リポの `diff_drive.yaml` を合わせます。
 
 ## ロボット PC で動かす（Docker）
 
