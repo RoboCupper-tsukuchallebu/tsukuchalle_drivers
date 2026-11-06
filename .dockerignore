@@ -1,6 +1,9 @@
-.git
+.git/
+.github/
+.pixi/
 build/
 install/
 log/
-.pixi/
 __pycache__/
+*.pyc
+.DS_Store

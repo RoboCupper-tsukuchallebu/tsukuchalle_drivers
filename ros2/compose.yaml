@@ -1,11 +1,11 @@
-# Run from the directory holding this file. DDT_SERIAL_DEVICE: host path of the board (prefer /dev/serial/by-id/...).
+# Run from the directory holding this file (scripts/deploy.sh puts it in ~/ddt-can-bridge/ with config/).
+# DDT_SERIAL_DEVICE: host path of the board (prefer /dev/serial/by-id/...).
+# DDT_IMAGE_TAG: image tag, default latest.
 x-ros-common: &ros-common
-  image: ddt-can-bridge-ros2:${IMAGE_TAG:-latest}
-  build:
-    context: ..
-    dockerfile: ros2/Dockerfile
+  image: ddt-can-bridge-ros2:${DDT_IMAGE_TAG:-latest}
   network_mode: host
-  # With LOCALHOST discovery Fast DDS uses shared memory, which does not cross containers without this.
+  # LOCALHOST discovery uses shared memory between processes on one host; it does not cross
+  # containers unless they share the IPC namespace.
   ipc: host
   init: true
   restart: "no"
@@ -46,3 +46,11 @@ services:
       - /run/udev:/run/udev:ro
     device_cgroup_rules:
       - "c 13:* rmw"
+
+  # Keyboard fallback: docker compose run --rm teleop-keyboard
+  teleop-keyboard:
+    <<: *ros-common
+    profiles: [keyboard]
+    stdin_open: true
+    tty: true
+    command: ros2 run teleop_twist_keyboard teleop_twist_keyboard
