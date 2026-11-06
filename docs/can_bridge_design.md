@@ -97,6 +97,7 @@ stateDiagram-v2
     DISABLED --> ARMING: ENABLE
     ARMING --> ACTIVE: 両方mode=2、故障なし
     ARMING --> DISABLED: 500ms経過または故障
+    ARMING --> STOPPING: DISABLE / CAN送信失敗
     ACTIVE --> STOPPING: DISABLE / 指令200ms断 / FB100ms断 / 故障 / モード離脱 / CAN送信失敗
     STOPPING --> DISABLED: 速度0を500ms送信後、0x105=0x09
 ```
@@ -129,6 +130,7 @@ flowchart LR
 ```
 
 - 起動時は無効で、`~/enable` を呼ぶまで指令を送らない。
+- `/joy` のボタンでも `~/enable` 相当を行う（立ち上がり検出、デッドマンと中立の条件つき、有効化の待ちは制御タイマで行いブロックしない）。無効化は条件なし。
 - `/cmd_vel` が `command_timeout_s` 途絶えると、加減速制限に従って0へ下げる。
 - ファームが停止したら出力を0に戻す。再開には `~/enable` が必要で、0から加速する。
 - モーター内部に速度ループがあるので、ROS側に速度PIDは持たない。

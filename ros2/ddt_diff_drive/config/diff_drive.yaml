@@ -18,3 +18,14 @@ diff_drive_node:
 
     # Targets fall to zero when /cmd_vel is silent for this long.
     command_timeout_s: 0.5
+
+    # Pad buttons on /joy (Logicool F310, XInput + SDL). Check with `ros2 topic echo /joy`.
+    # Enable (Start) is refused while the deadman is held or a neutral axis is deflected;
+    # disable (Back) always works. -1 on joy_enable_button turns off enabling by pad only.
+    joy_enable_button: 7
+    joy_disable_button: 6
+    # Keep both in step with ros2/config/teleop_twist_joy.yaml: enable_button for the deadman,
+    # axis_linear.x and axis_angular.yaw for the neutral axes. A mismatch silently disables
+    # the check.
+    joy_deadman_button: 0
+    joy_neutral_axes: [0, 1]
