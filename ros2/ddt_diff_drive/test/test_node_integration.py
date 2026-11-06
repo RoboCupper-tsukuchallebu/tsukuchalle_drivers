@@ -331,6 +331,8 @@ class DiffDriveNodeTest(unittest.TestCase):
         self.release_all(0.6)
         self.assertEqual(self.firmware.enable_count, 1)
         self.assertEqual(self.firmware.state, STATE_DISABLED)
+        # A blocking enable would let the firmware reach ACTIVE before Back is handled.
+        self.assertEqual(self.firmware.velocities, [])
 
     def test_start_while_active_does_not_send_enable_again(self):
         self.enable_by_pad()

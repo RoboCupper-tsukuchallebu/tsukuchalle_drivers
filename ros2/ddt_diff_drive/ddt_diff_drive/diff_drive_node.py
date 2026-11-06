@@ -203,7 +203,8 @@ class DiffDriveNode(Node):
                 reason=f"command_timeout_s must be in (0, {MAX_COMMAND_TIMEOUT_S}]")
         if "port" in overrides:
             return SetParametersResult(successful=False, reason="port cannot change at runtime")
-        if self._bridge.state == STATE_ACTIVE and WIRING_PARAMETERS & overrides.keys():
+        is_enabling = self._bridge.state == STATE_ACTIVE or self._arming_deadline is not None
+        if is_enabling and WIRING_PARAMETERS & overrides.keys():
             return SetParametersResult(successful=False,
                                        reason="disable the motors before changing wheel assignment")
         config = self._read_config(overrides)
