@@ -87,6 +87,12 @@ pixi run ros2 param set /diff_drive_node max_wheel_rpm 50.0
 | `max_wheel_rpm` | 100.0 | 車輪の最大速度（上限210）。飽和時は左右の比を保つ |
 | `max_acceleration_rpm_per_s` | 100.0 | 加減速の制限 |
 | `command_timeout_s` | 0.5 | `/cmd_vel` が途絶えたら目標を0へ（上限5秒）。減速は200rpm/s以上 |
+| `joy_enable_button` | 7 | `/joy` でこのボタンを押すと有効化（Start を仮定）。押した瞬間だけ反応し、デッドマンかスティックが中立でないと拒否。-1 でパッドからの有効化だけ無効（無効化は生きる） |
+| `joy_disable_button` | 6 | このボタンを押すと無効化（Back を仮定）。常に効く。`joy_enable_button` が 0 以上なら -1 不可 |
+| `joy_deadman_button` | 0 | `teleop_twist_joy.yaml` の `enable_button` と同じ番号にする。押している間は有効化しない |
+| `joy_neutral_axes` | `[0, 1]` | 有効化時に中立（絶対値 0.1 以下）を要求する軸。`teleop_twist_joy.yaml` の `axis_linear.x`・`axis_angular.yaw` と同じ番号にする |
+
+3つのボタン番号は互いに異なる必要があります。最初に届いた `/joy` は「押した瞬間」とみなしません（Start を押したまま `joy` を再起動しても有効化されません）。
 
 ノードは実行中の変更を受け付けますが、ファイルには保存しません。確定した値は `ros2/ddt_diff_drive/config/diff_drive.yaml` に書いてください。`pixi run drive` はこのファイルを直接読みます。
 
@@ -111,13 +117,15 @@ export DDT_SERIAL_DEVICE=/dev/serial/by-id/usb-...   # 省略時は /dev/ttyACM0
 docker compose up -d drive joy teleop                # この時点ではモーターは無効
 ```
 
-動かすには車輪を浮かせて、手動で有効化します（コンテナの起動では有効化しません）。`exec` は entrypoint を通らないため、`docker-entrypoint.sh` 経由で呼びます。
+動かすには車輪を浮かせて、パッドで有効化します（コンテナの起動では有効化しません）。**Start で有効化、Back で無効化**します（ボタン番号は下の `/joy` で確認）。デッドマン（A）を離し、左スティックを中立に戻してから Start を押してください。そうでないと `enable ignored: ...` の警告が出て有効化しません。
+
+パッドが使えないときの代替として、サービスでも有効化できます（中立条件は見ません）。`exec` は entrypoint を通らないため、`docker-entrypoint.sh` 経由で呼びます。
 
 ```sh
 docker compose exec drive /ws/ros2/docker-entrypoint.sh ros2 service call /diff_drive_node/enable std_srvs/srv/SetBool "{data: true}"
 ```
 
-`enable_button`（初期値は0番、Xbox系のA）を**押している間だけ**、左スティックの上下で前後、左右で旋回します。離すと止まります。無効化は `data: false`、またはコンテナの停止です。
+`enable_button`（初期値は0番、Xbox系のA）を**押している間だけ**、左スティックの上下で前後、左右で旋回します。離すと止まります。無効化は Back、`data: false`、またはコンテナの停止です。
 
 ```sh
 docker compose logs -f drive teleop     # 状態の確認
@@ -130,7 +138,7 @@ docker compose stop                     # SIGTERMで停止処理（DISABLE）を
 docker compose run --rm teleop-keyboard
 ```
 
-- ボタン・軸の番号が違うパッドは、`docker compose exec joy /ws/ros2/docker-entrypoint.sh ros2 topic echo /joy` で確認して `config/teleop_twist_joy.yaml` を直し、`docker compose up -d --force-recreate teleop` で反映します。初期値は低速（0.3 m/s、1.0 rad/s）です。
+- ボタン・軸の番号が違うパッドは、`docker compose exec joy /ws/ros2/docker-entrypoint.sh ros2 topic echo /joy` で確認して `config/teleop_twist_joy.yaml` を直し、`docker compose up -d --force-recreate teleop` で反映します。Start・Back・デッドマンの番号と中立を見る軸は `ros2/ddt_diff_drive/config/diff_drive.yaml`（`joy_*`）にもあるので、**両方を同じ番号に直してください**（片方だけ直すと、有効化の誤操作防止が黙って効かなくなります）。初期値は低速（0.3 m/s、1.0 rad/s）です。
 - `joy` は `/dev/input` を丸ごと読めるため、コンテナ内からホストのキーボード入力も読めます。専用のロボット PC を前提にしています。
 - USBを抜き差ししたり、基板がリセットしたりしたら、`drive` はコンテナごと終了します（再起動しません）。挿し直して `docker compose up -d drive` で復帰します。`devices:` は作成時に固定されるためです。基板が無いと `drive` はコンテナ作成時に失敗します。
 - ModemManager が動いていると、挿した直後の `ttyACM` に AT コマンドを送ることがあります。ノードの排他ロック（TIOCEXCL）は open 後にしか効きません。`mmcli -L` と `journalctl -u ModemManager` で確認し、症状が出たら `sudo systemctl mask --now ModemManager` してください。

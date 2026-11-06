@@ -12,6 +12,7 @@ import rclpy
 from geometry_msgs.msg import Twist
 from rclpy.executors import SingleThreadedExecutor
 from rclpy.parameter import Parameter
+from sensor_msgs.msg import Joy
 from std_srvs.srv import SetBool
 
 from ddt_diff_drive.ddt_bridge import (
@@ -30,6 +31,13 @@ from ddt_diff_drive.diff_drive_node import DiffDriveNode
 STATUS_PERIOD_S = 0.1
 ARMING_DELAY_S = 0.15
 STOPPING_DELAY_S = 0.2
+JOY_PERIOD_S = 0.05  # joy_node's autorepeat_rate of 20 Hz.
+START_BUTTON = 7
+BACK_BUTTON = 6
+DEADMAN_BUTTON = 0
+STICK_Y_AXIS = 1
+BUTTON_COUNT = 11
+AXIS_COUNT = 8
 
 
 class FakeFirmware:
@@ -107,6 +115,7 @@ class DiffDriveNodeTest(unittest.TestCase):
         self.node = DiffDriveNode([Parameter("port", value=self.firmware.device_path)])
         self.client_node = rclpy.create_node("test_client")
         self.publisher = self.client_node.create_publisher(Twist, "cmd_vel", 10)
+        self.joy_publisher = self.client_node.create_publisher(Joy, "joy", 10)
         self.enable_client = self.client_node.create_client(SetBool, "diff_drive_node/enable")
         self.executor = SingleThreadedExecutor()
         self.executor.add_node(self.node)
@@ -116,6 +125,7 @@ class DiffDriveNodeTest(unittest.TestCase):
         while self.publisher.get_subscription_count() == 0 and time.monotonic() < deadline:
             self.executor.spin_once(timeout_sec=0.01)
         self.assertEqual(self.publisher.get_subscription_count(), 1)
+        self.assertEqual(self.joy_publisher.get_subscription_count(), 1)
 
     def _tear_down(self):
         self.executor.shutdown()
@@ -124,12 +134,29 @@ class DiffDriveNodeTest(unittest.TestCase):
         self.node.destroy_node()
         self.firmware.close()
 
-    def spin_for(self, seconds: float, publish: Twist | None = None) -> None:
+    def spin_for(self, seconds: float, publish: Twist | None = None,
+                 joy: Joy | None = None) -> None:
         deadline = time.monotonic() + seconds
+        next_joy_time = 0.0
         while time.monotonic() < deadline:
             if publish is not None:
                 self.publisher.publish(publish)
+            if joy is not None and time.monotonic() >= next_joy_time:
+                self.joy_publisher.publish(joy)
+                next_joy_time = time.monotonic() + JOY_PERIOD_S
             self.executor.spin_once(timeout_sec=0.005)
+
+    def press(self, seconds: float, buttons=(), axes=None, publish: Twist | None = None) -> None:
+        self.spin_for(seconds, publish, make_joy(buttons, axes))
+
+    def release_all(self, seconds: float = 0.1) -> None:
+        self.press(seconds)
+
+    def enable_by_pad(self) -> None:
+        self.release_all()
+        self.press(0.1, [START_BUTTON])
+        self.release_all(0.4)
+        self.assertEqual(self.firmware.state, STATE_ACTIVE)
 
     def call_enable(self, is_enabled: bool) -> SetBool.Response:
         self.assertTrue(self.enable_client.wait_for_service(timeout_sec=5.0))
@@ -232,6 +259,108 @@ class DiffDriveNodeTest(unittest.TestCase):
         self.assertTrue(self.call_enable(True).success)
         self.assertTrue(self.call_enable(False).success)
         self.assertEqual(self.firmware.state, STATE_DISABLED)
+
+    def test_idle_joy_does_not_enable(self):
+        self.release_all(0.3)
+        self.assertEqual(self.firmware.enable_count, 0)
+
+    def test_start_button_enables_once_per_press(self):
+        self.release_all()
+        self.press(0.1, [START_BUTTON])
+        self.press(0.4, [START_BUTTON])
+        self.assertEqual(self.firmware.state, STATE_ACTIVE)
+        self.assertEqual(self.firmware.enable_count, 1)
+
+    def test_start_held_in_first_joy_message_does_not_enable(self):
+        self.press(0.3, [START_BUTTON])
+        self.assertEqual(self.firmware.enable_count, 0)
+        self.release_all()
+        self.press(0.4, [START_BUTTON])
+        self.assertEqual(self.firmware.state, STATE_ACTIVE)
+
+    def test_back_button_disables(self):
+        self.enable_by_pad()
+        self.press(0.1, [BACK_BUTTON])
+        self.release_all(0.4)
+        self.assertEqual(self.firmware.state, STATE_DISABLED)
+
+    def test_deadman_held_blocks_enable(self):
+        self.release_all()
+        self.press(0.3, [DEADMAN_BUTTON, START_BUTTON])
+        self.assertEqual(self.firmware.enable_count, 0)
+
+    def test_stick_away_from_center_blocks_enable_until_a_new_press(self):
+        self.release_all()
+        self.press(0.3, [START_BUTTON], {STICK_Y_AXIS: 0.5})
+        self.assertEqual(self.firmware.enable_count, 0)
+        self.release_all()
+        self.press(0.4, [START_BUTTON])
+        self.assertEqual(self.firmware.state, STATE_ACTIVE)
+
+    def test_start_and_back_together_do_not_enable(self):
+        self.release_all()
+        self.press(0.3, [BACK_BUTTON, START_BUTTON])
+        self.assertEqual(self.firmware.enable_count, 0)
+
+    def test_pad_enable_can_be_turned_off_but_disable_stays(self):
+        self.assertTrue(self.node.set_parameters(
+            [Parameter("joy_enable_button", value=-1)])[0].successful)
+        self.release_all()
+        self.press(0.3, [START_BUTTON])
+        self.assertEqual(self.firmware.enable_count, 0)
+        self.assertTrue(self.call_enable(True).success)
+        self.press(0.1, [BACK_BUTTON])
+        self.release_all(0.4)
+        self.assertEqual(self.firmware.state, STATE_DISABLED)
+
+    def test_joy_with_too_few_buttons_is_ignored(self):
+        self.release_all()
+        self.spin_for(0.3, joy=Joy(buttons=[1, 1, 1]))
+        self.assertEqual(self.firmware.enable_count, 0)
+
+    def test_first_velocity_after_pad_enable_is_small(self):
+        self.release_all()
+        self.press(0.1, [START_BUTTON])
+        self.press(0.5, publish=forward_twist())
+        self.assertLessEqual(abs(self.firmware.velocities[0][0]), 4)
+
+    def test_back_during_arming_wins(self):
+        self.release_all()
+        self.press(0.04, [START_BUTTON])
+        self.press(0.1, [BACK_BUTTON])
+        self.release_all(0.6)
+        self.assertEqual(self.firmware.enable_count, 1)
+        self.assertEqual(self.firmware.state, STATE_DISABLED)
+
+    def test_start_while_active_does_not_send_enable_again(self):
+        self.enable_by_pad()
+        self.press(0.1, [START_BUTTON])
+        self.release_all()
+        self.assertEqual(self.firmware.enable_count, 1)
+
+    def test_rejects_unusable_joy_parameters(self):
+        invalid_changes = (
+            {"joy_disable_button": -1},
+            {"joy_enable_button": DEADMAN_BUTTON},
+            {"joy_enable_button": BACK_BUTTON},
+            {"joy_disable_button": DEADMAN_BUTTON},
+            {"joy_neutral_axes": [-1]},
+            {"joy_enable_button": -2},
+        )
+        for change in invalid_changes:
+            with self.subTest(change):
+                results = self.node.set_parameters(
+                    [Parameter(name, value=value) for name, value in change.items()])
+                self.assertFalse(results[0].successful)
+        self.assertTrue(self.node.set_parameters(
+            [Parameter("joy_enable_button", value=-1)])[0].successful)
+
+
+def make_joy(buttons=(), axes=None) -> Joy:
+    message = Joy()
+    message.buttons = [1 if index in buttons else 0 for index in range(BUTTON_COUNT)]
+    message.axes = [float((axes or {}).get(index, 0.0)) for index in range(AXIS_COUNT)]
+    return message
 
 
 def forward_twist() -> Twist:

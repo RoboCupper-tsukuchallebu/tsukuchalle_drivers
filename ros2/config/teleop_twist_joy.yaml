@@ -3,6 +3,8 @@
 teleop_twist_joy_node:
   ros__parameters:
     require_enable_button: true  # deadman: moves only while this button is held
+    # enable_button and the axes below must match joy_deadman_button and joy_neutral_axes in
+    # ddt_diff_drive/config/diff_drive.yaml, which checks them before enabling by pad.
     enable_button: 0             # A
     axis_linear:
       x: 1                       # left stick, up/down
