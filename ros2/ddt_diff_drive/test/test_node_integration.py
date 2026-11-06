@@ -250,7 +250,6 @@ class NodeTestBase(unittest.TestCase):
         self.assertTrue(future.done())
         return future.result()
 
-
     def set_parameter(self, name: str, value) -> None:
         self.assertTrue(self.node.set_parameters([Parameter(name, value=value)])[0].successful)
 
@@ -939,6 +938,18 @@ class WheelOdometryTest(NodeTestBase):
         self.assertGreater(gap_s, ARMING_DELAY_S * 0.8)  # It really blocked.
         self.assertAlmostEqual((self.x(after) - self.x(before)) / gap_s, FORWARD_SPEED_M_S,
                                delta=FORWARD_SPEED_M_S * 0.2)
+
+    def test_warns_about_motion_lost_to_a_late_control_timer(self):
+        self.feed_forward()
+        self.spin_for(0.5)
+        x_before = self.x(self.odometry[-1])
+        logger_class = type(self.node.get_logger())
+        with mock.patch.object(logger_class, "warn", autospec=True) as warn:
+            time.sleep(0.3)  # The executor is not spinning: the control timer is late.
+            self.spin_for(0.3)
+        messages = [call.args[1] for call in warn.call_args_list]
+        self.assertTrue([message for message in messages if "dropped" in message], messages)
+        self.assertGreater(self.x(self.odometry[-1]), x_before)  # It carries on afterwards.
 
     def test_tf_matches_odometry(self):
         self.feed_forward()

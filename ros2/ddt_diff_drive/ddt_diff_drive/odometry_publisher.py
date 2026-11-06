@@ -63,6 +63,11 @@ class OdometryPublisher:
         self._latest_rpm[feedback.motor_id] = (feedback.velocity_rpm, now)
         reference_time, self._reference_time = self._reference_time, now
         other = self._latest_rpm.get(3 - feedback.motor_id)
+        if reference_time is not None and now - reference_time > FEEDBACK_STALE_S:
+            # A late control timer or a feedback gap: the pose cannot follow, so say so.
+            self._node.get_logger().warn(
+                f"wheel odometry dropped {now - reference_time:.2f} s of motion: "
+                "no feedback was processed for that long", throttle_duration_sec=1.0)
         if (reference_time is None or now - reference_time > FEEDBACK_STALE_S
                 or other is None or now - other[1] > FEEDBACK_STALE_S):
             return  # Paused: only the reference time moves on.

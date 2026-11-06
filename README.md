@@ -126,7 +126,8 @@ pixi run ros2 param set /diff_drive_node max_wheel_rpm 50.0
 既知の制限:
 
 - `~/enable` は最大 1.5 秒ブロックします（走行中の `false` はファームの STOPPING 0.5 秒を待つので約 0.6 秒）。その間は姿勢の積分は続きますが出版が止まります。パッド（Start / Back）はブロックしません。
-- 制御タイマが 0.1 秒を超えて遅れると、その間の移動は失われます。
+- 制御タイマが 0.1 秒を超えて遅れると、その間の移動は失われます（`wheel odometry dropped <秒> s of motion` を WARN で出します）。
+- システム時刻が逆行すると、stamp が追いつくまで出版が止まります（`stamp did not advance` の WARN は起動後 1 回だけ）。
 - 1 rpm 刻みなので、0.1 m/s 未満では速度の相対誤差が 10 % 級です。
 
 `track_width_m` の校正: その場で車体を実角度 θ_true（例: 床のマークで 1 回転 = 2π）だけ回し、`/wheel/odom` の yaw を積算した値 θ_odom を読みます（回転の途中で ±π を跨ぐので、差分を足し合わせる）。補正後のトレッドは `track_width_m × θ_odom / θ_true` です。値は `tsukuchalle_description` の `config/dimensions.yaml` を先に直し、本リポの `diff_drive.yaml` を合わせます。
