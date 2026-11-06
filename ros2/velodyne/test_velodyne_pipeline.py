@@ -18,7 +18,8 @@ import unittest
 from contextlib import contextmanager
 
 import rclpy
-from rclpy.qos import qos_profile_sensor_data
+from rclpy.qos import QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
+from rclpy.serialization import deserialize_message
 from sensor_msgs.msg import PointCloud2
 from velodyne_msgs.msg import VelodyneScan
 
@@ -38,6 +39,7 @@ TRANSFORM_COMMAND = [
     "-p", "model:=32E",
     "-p", "calibration:=/opt/ros/jazzy/share/velodyne_pointcloud/params/32db.yaml",
 ]
+RELIABLE_QOS = QoSProfile(depth=10, reliability=ReliabilityPolicy.RELIABLE)
 SENSOR_ADDRESS = ("127.0.0.1", 2368)
 
 REVOLUTION_COUNT = 20
@@ -90,6 +92,7 @@ class LaunchedProcesses:
             except subprocess.TimeoutExpired:
                 process.kill()
                 process.wait()
+        self.log_file.close()
 
 
 @contextmanager
@@ -117,11 +120,24 @@ class VelodynePipelineTest(unittest.TestCase):
     def test_synthetic_revolutions_become_organized_point_clouds(self):
         node = rclpy.create_node("velodyne_pipeline_test")
         self.addCleanup(node.destroy_node)
-        received_clouds = []
-        # The callback only stores messages: walking 69,504 points here would make a
-        # best-effort depth-5 subscription drop the next frame.
+        serialized_clouds = []
+        best_effort_clouds = []
+        # The callbacks only store the serialized bytes (raw=True): converting a 1.5 MB message
+        # to Python objects, let alone walking 69,504 points, takes longer than the 100 ms
+        # between frames.
         subscription = node.create_subscription(
-            PointCloud2, "/velodyne_points", received_clouds.append, qos_profile_sensor_data
+            PointCloud2, "/velodyne_points", serialized_clouds.append, RELIABLE_QOS, raw=True
+        )
+        # nav-stack subscribes with SensorDataQoS; this one checks that it is compatible with
+        # the reliable publisher. It is not used to count frames: in a container, Fast DDS drops
+        # 1.5 MB best-effort samples (20 to 80 % of them in a run on the build machine, while
+        # the reliable subscription above got all 20).
+        best_effort_subscription = node.create_subscription(
+            PointCloud2,
+            "/velodyne_points",
+            best_effort_clouds.append,
+            qos_profile_sensor_data,
+            raw=True,
         )
 
         with launched([DRIVER_COMMAND, TRANSFORM_COMMAND]) as processes:
@@ -129,6 +145,7 @@ class VelodynePipelineTest(unittest.TestCase):
                 node,
                 lambda: processes.all_alive()
                 and subscription.get_publisher_count() >= 1
+                and best_effort_subscription.get_publisher_count() >= 1
                 and node.count_subscribers("/velodyne_packets") >= 1,
                 DEADLINE_SECONDS,
             )
@@ -151,8 +168,8 @@ class VelodynePipelineTest(unittest.TestCase):
 
             def finished():
                 nonlocal last_count, last_change
-                if len(received_clouds) != last_count:
-                    last_count = len(received_clouds)
+                if len(serialized_clouds) != last_count:
+                    last_count = len(serialized_clouds)
                     last_change = time.monotonic()
                 return (
                     last_count >= REVOLUTION_COUNT
@@ -162,10 +179,12 @@ class VelodynePipelineTest(unittest.TestCase):
             spin_until(node, finished, DEADLINE_SECONDS)
             driver_log = processes.log_text()
 
+        received_clouds = [deserialize_message(raw, PointCloud2) for raw in serialized_clouds]
         minimum_frames = REVOLUTION_COUNT - ACCEPTED_FRAME_LOSS
         self.assertGreaterEqual(
-            len(received_clouds), minimum_frames, f"too few frames:\n{driver_log}"
+            len(serialized_clouds), minimum_frames, f"too few frames:\n{driver_log}"
         )
+        self.assertGreaterEqual(len(best_effort_clouds), 1, "best-effort subscription got nothing")
         for cloud in received_clouds:
             self.assert_cloud_layout(cloud)
         self.assert_cloud_points(received_clouds[0])
