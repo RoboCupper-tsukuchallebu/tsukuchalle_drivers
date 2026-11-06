@@ -4,7 +4,7 @@ diff_drive_node:
     port: ""
 
     # Geometry.
-    wheel_radius_m: 0.10    # Measured on the robot 2026-11-06 (catalog diameter 187 mm gives 0.0935). Verify by rolling 10 turns.
+    wheel_radius_m: 0.0935  # From the catalog diameter of 187 mm. Measure under load.
     track_width_m: 0.26     # Measured on the robot 2026-11-06: 26 cm (13 cm from the rotation center to each wheel).
 
     # Wheel assignment. Check with the wheels lifted; cannot change while enabled.
