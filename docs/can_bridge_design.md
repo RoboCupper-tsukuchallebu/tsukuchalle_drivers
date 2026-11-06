@@ -97,6 +97,7 @@ stateDiagram-v2
     DISABLED --> ARMING: ENABLE
     ARMING --> ACTIVE: 両方mode=2、故障なし
     ARMING --> DISABLED: 500ms経過または故障
+    ARMING --> STOPPING: DISABLE / CAN送信失敗
     ACTIVE --> STOPPING: DISABLE / 指令200ms断 / FB100ms断 / 故障 / モード離脱 / CAN送信失敗
     STOPPING --> DISABLED: 速度0を500ms送信後、0x105=0x09
 ```

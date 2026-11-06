@@ -25,9 +25,11 @@ from ddt_diff_drive.ddt_bridge import (
     decode_frames,
     encode_frame,
 )
-from ddt_diff_drive.diff_drive_node import DiffDriveNode
+from ddt_diff_drive.diff_drive_node import JOY_STALE_S, STATE_WAIT_S, DiffDriveNode
 
 
+STATE_ARMING = 1
+STATE_STOPPING = 3
 STATUS_PERIOD_S = 0.1
 ARMING_DELAY_S = 0.15
 STOPPING_DELAY_S = 0.2
@@ -57,6 +59,9 @@ class FakeFirmware:
         self.velocities = []
         self.rejected_velocity_count = 0
         self.enable_count = 0
+        self.disable_count = 0
+        self.ignored_enable = False  # Simulates an ENABLE that never reaches ACTIVE.
+        self.frames_to_drop = 0  # Simulates DISABLE frames that are lost.
         self._pending = None
         self._last_status_time = 0.0
         self._stop = threading.Event()
@@ -84,11 +89,20 @@ class FakeFirmware:
         except BlockingIOError:
             return
         for message_type, payload in decode_frames(self._buffer):
+            # Transitions follow firmware/src/bridge_controller.cpp: ENABLE is accepted only in
+            # DISABLED; DISABLE in ARMING or ACTIVE goes through STOPPING to DISABLED.
             if message_type == TYPE_ENABLE:
                 self.enable_count += 1
-                self._pending = (time.monotonic() + ARMING_DELAY_S, STATE_ACTIVE)
+                if self.state == STATE_DISABLED and not self.ignored_enable:
+                    self.state = STATE_ARMING
+                    self._pending = (time.monotonic() + ARMING_DELAY_S, STATE_ACTIVE)
             elif message_type == TYPE_DISABLE:
-                self._pending = (time.monotonic() + STOPPING_DELAY_S, STATE_DISABLED)
+                self.disable_count += 1
+                if self.frames_to_drop > 0:
+                    self.frames_to_drop -= 1
+                elif self.state in (STATE_ARMING, STATE_ACTIVE):
+                    self.state = STATE_STOPPING
+                    self._pending = (time.monotonic() + STOPPING_DELAY_S, STATE_DISABLED)
             elif message_type == TYPE_SET_VELOCITY and self.state == STATE_ACTIVE:
                 self.velocities.append(struct.unpack("<hh", payload))
             elif message_type == TYPE_SET_VELOCITY:
@@ -122,7 +136,8 @@ class DiffDriveNodeTest(unittest.TestCase):
         self.executor.add_node(self.client_node)
         self.addCleanup(self._tear_down)
         deadline = time.monotonic() + 5.0
-        while self.publisher.get_subscription_count() == 0 and time.monotonic() < deadline:
+        while (self.publisher.get_subscription_count() == 0
+               or self.joy_publisher.get_subscription_count() == 0) and time.monotonic() < deadline:
             self.executor.spin_once(timeout_sec=0.01)
         self.assertEqual(self.publisher.get_subscription_count(), 1)
         self.assertEqual(self.joy_publisher.get_subscription_count(), 1)
@@ -293,6 +308,8 @@ class DiffDriveNodeTest(unittest.TestCase):
         self.release_all()
         self.press(0.3, [START_BUTTON], {STICK_Y_AXIS: 0.5})
         self.assertEqual(self.firmware.enable_count, 0)
+        self.press(0.3, [START_BUTTON])  # Centered now, but Start is still the same press.
+        self.assertEqual(self.firmware.enable_count, 0)
         self.release_all()
         self.press(0.4, [START_BUTTON])
         self.assertEqual(self.firmware.state, STATE_ACTIVE)
@@ -333,6 +350,55 @@ class DiffDriveNodeTest(unittest.TestCase):
         self.assertEqual(self.firmware.state, STATE_DISABLED)
         # A blocking enable would let the firmware reach ACTIVE before Back is handled.
         self.assertEqual(self.firmware.velocities, [])
+        self.spin_for(2.0, forward_twist())
+        self.assertEqual(self.firmware.velocities, [])
+
+    def test_lost_disable_during_arming_is_resent(self):
+        self.release_all()
+        self.press(0.04, [START_BUTTON])
+        self.firmware.frames_to_drop = 1
+        self.press(0.1, [BACK_BUTTON])
+        self.release_all(0.1)
+        self.spin_for(2.0, forward_twist())
+        self.assertEqual(self.firmware.state, STATE_DISABLED)
+        self.assertGreater(self.firmware.disable_count, 1)
+        self.assertTrue(all(velocity == (0, 0) for velocity in self.firmware.velocities))
+
+    def test_commands_stay_dropped_while_disable_is_unconfirmed(self):
+        self.enable_by_pad()
+        self.firmware.frames_to_drop = 1000
+        self.press(0.1, [BACK_BUTTON])
+        self.firmware.velocities.clear()
+        self.spin_for(2.0, forward_twist())
+        self.assertEqual(self.firmware.state, STATE_ACTIVE)
+        self.assertTrue(all(velocity == (0, 0) for velocity in self.firmware.velocities))
+
+    def test_start_is_ignored_after_a_silence_on_joy(self):
+        self.release_all()
+        self.spin_for(JOY_STALE_S + 0.2)  # joy_node restarted; Start is held when it returns.
+        self.press(0.3, [START_BUTTON])
+        self.assertEqual(self.firmware.enable_count, 0)
+        self.release_all()
+        self.press(0.4, [START_BUTTON])
+        self.assertEqual(self.firmware.state, STATE_ACTIVE)
+
+    def test_back_still_works_on_the_first_message_after_a_silence(self):
+        self.enable_by_pad()
+        self.spin_for(JOY_STALE_S + 0.2)
+        self.press(0.1, [BACK_BUTTON])
+        self.release_all(0.4)
+        self.assertEqual(self.firmware.state, STATE_DISABLED)
+
+    def test_enable_that_never_reaches_active_can_be_retried(self):
+        self.firmware.ignored_enable = True
+        self.release_all()
+        self.press(0.1, [START_BUTTON])
+        self.release_all(STATE_WAIT_S + 0.5)
+        self.firmware.ignored_enable = False
+        self.press(0.1, [START_BUTTON])
+        self.release_all(0.4)
+        self.assertEqual(self.firmware.state, STATE_ACTIVE)
+        self.assertEqual(self.firmware.enable_count, 2)
 
     def test_start_while_active_does_not_send_enable_again(self):
         self.enable_by_pad()

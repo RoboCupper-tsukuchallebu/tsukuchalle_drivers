@@ -48,6 +48,11 @@ ENABLE_SETTLE_S = 0.1
 MIN_COMMAND_LOSS_DECELERATION_RPM_PER_S = 200.0
 STATE_WAIT_S = 1.5
 JOY_NEUTRAL_THRESHOLD = 0.1
+JOY_STALE_S = 0.5  # A longer silence on /joy means joy_node restarted or the pad was replugged.
+# STATUS comes at 10 Hz, so a DISABLED seen right after the request may be older than it.
+DISABLE_CONFIRM_S = 0.15
+STATE_ARMING = 1
+STATE_STOPPING = 3
 PORT_PATTERNS = ("/dev/cu.usbmodem*", "/dev/ttyACM*")
 WIRING_PARAMETERS = {"left_motor_id", "left_sign", "right_sign"}
 DRIVE_PARAMETERS = {
@@ -168,6 +173,8 @@ class DiffDriveNode(Node):
         self._previous_buttons = None  # The first Joy message has no previous one to compare.
         self._arming_deadline = None  # Set while waiting for ACTIVE after ENABLE was sent.
         self._arming_button = None
+        self._disable_requested_at = None  # Set until DISABLED is seen after a disable request.
+        self._last_joy_time = time.monotonic()
 
         self.add_on_set_parameters_callback(self._on_set_parameters)
         self.create_subscription(Twist, "cmd_vel", self._on_cmd_vel, 10)
@@ -222,21 +229,27 @@ class DiffDriveNode(Node):
 
     def _on_cmd_vel(self, message: Twist) -> None:
         # Commands sent while disabled must not start the motors on enable.
-        if self._bridge.state != STATE_ACTIVE or time.monotonic() < self._ignore_commands_until:
+        if (self._bridge.state != STATE_ACTIVE or self._disable_requested_at is not None
+                or time.monotonic() < self._ignore_commands_until):
             return
         self._requested = twist_to_wheels(message.linear.x, message.angular.z, self._config)
         self._last_command_time = time.monotonic()
 
     def _on_joy(self, message: Joy) -> None:
         buttons = tuple(message.buttons)
+        now = time.monotonic()
         previous, self._previous_buttons = self._previous_buttons, buttons
+        is_after_silence = now - self._last_joy_time >= JOY_STALE_S
+        self._last_joy_time = now
         if previous is None:
             return
         config = self._joy_config
         try:
             if is_rising_edge(previous, buttons, config.disable_button):
                 self._disable_by_pad(config.disable_button)
-            elif is_rising_edge(previous, buttons, config.enable_button):
+            # The first message after a silence is not an edge: Start may have been held
+            # through a joy_node restart. Stopping stays allowed on it (above).
+            elif not is_after_silence and is_rising_edge(previous, buttons, config.enable_button):
                 self._enable_by_pad(config.enable_button, buttons, message.axes)
         except OSError as error:
             self._handle_lost_board(error)
@@ -248,6 +261,9 @@ class DiffDriveNode(Node):
             return
         if self._arming_deadline is not None:
             logger.warn("enable ignored: already arming", throttle_duration_sec=1.0)
+            return
+        if self._disable_requested_at is not None:
+            logger.warn("enable ignored: disable in progress", throttle_duration_sec=1.0)
             return
         if is_pressed(buttons, self._joy_config.disable_button):
             logger.warn("enable ignored: the disable button is held", throttle_duration_sec=1.0)
@@ -262,14 +278,35 @@ class DiffDriveNode(Node):
         self._arming_button = button
 
     def _disable_by_pad(self, button: int) -> None:
-        # Does not wait for DISABLED: the control timer holds the output at zero meanwhile.
+        self._request_disable()
+        self.get_logger().info(f"disabled by joy button {button}")
+
+    def _request_disable(self) -> None:
+        # Does not wait for DISABLED: the control timer holds the output at zero, drops
+        # /cmd_vel, resends DISABLE and reports a failure until DISABLED is seen. The
+        # firmware may be mid-ARMING, or the first frame may be lost.
         self._arming_deadline = None
         self._requested = WheelTargets()
         self._output = WheelTargets()
         self._last_command_time = None
-        self._ignore_commands_until = time.monotonic() + STATE_WAIT_S
+        self._disable_requested_at = time.monotonic()
         self._bridge.send(TYPE_DISABLE)
-        self.get_logger().info(f"disabled by joy button {button}")
+
+    def _check_disabling(self, now: float) -> None:
+        if self._disable_requested_at is None:
+            return
+        state = self._bridge.state
+        if state == STATE_DISABLED:
+            if now - self._disable_requested_at >= DISABLE_CONFIRM_S:
+                self._disable_requested_at = None
+            return
+        if state in (STATE_ARMING, STATE_ACTIVE):
+            self._bridge.send(TYPE_DISABLE)
+        if now - self._disable_requested_at > STATE_WAIT_S:
+            self.get_logger().error(
+                f"disable not confirmed: state={STATE_NAMES.get(state, 'unknown')} "
+                f"stop_reason={STOP_REASONS.get(self._bridge.stop_reason, 'unknown')}",
+                throttle_duration_sec=1.0)
 
     def _on_enable(self, request: SetBool.Request, response: SetBool.Response) -> SetBool.Response:
         try:
@@ -282,8 +319,8 @@ class DiffDriveNode(Node):
         return response
 
     def _disable(self) -> bool:
-        self._arming_deadline = None
-        self.stop_motors()
+        self._request_disable()
+        self._bridge.wait_for_state(STATE_DISABLED, STATE_WAIT_S)
         return self._bridge.state == STATE_DISABLED
 
     def _enable(self) -> bool:
@@ -296,6 +333,7 @@ class DiffDriveNode(Node):
         return is_active
 
     def _begin_arming(self) -> None:
+        self._disable_requested_at = None
         self._output = WheelTargets()
         self._requested = WheelTargets()
         self._last_command_time = None
@@ -340,6 +378,7 @@ class DiffDriveNode(Node):
         self._last_control_time = now
         try:
             self._bridge.poll(0.0)
+            self._check_disabling(now)
             self._check_arming(now)
             if self._bridge.state != STATE_ACTIVE:
                 # Never resume at speed after the firmware has stopped on its own.
