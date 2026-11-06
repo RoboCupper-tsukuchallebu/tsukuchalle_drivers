@@ -59,6 +59,7 @@ class FakeFirmware:
         self.device_path = os.path.join(self._link_directory, "by-id-board")
         self._lock = threading.RLock()
         self.state = STATE_DISABLED
+        self.stop_reason = 0
         self.velocities = []
         self.rejected_velocity_count = 0
         self.enable_count = 0
@@ -95,6 +96,7 @@ class FakeFirmware:
     def reconnect(self) -> None:
         with self._lock:
             self.state = STATE_DISABLED
+            self.stop_reason = 0
             self._buffer.clear()
             self._open_pty()
 
@@ -112,10 +114,11 @@ class FakeFirmware:
             self._pending = None
         if self.is_status_sent and now - self._last_status_time >= STATUS_PERIOD_S:
             self._last_status_time = now
-            os.write(self.controller_fd, encode_frame(TYPE_STATUS, bytes([self.state, 0])))
+            os.write(self.controller_fd, encode_frame(TYPE_STATUS, bytes([self.state, self.stop_reason])))
 
     def set_state(self, state: int, stop_reason: int = 0) -> None:
         self.state = state
+        self.stop_reason = stop_reason
         os.write(self.controller_fd, encode_frame(TYPE_STATUS, bytes([state, stop_reason])))
 
     def _service(self) -> None:
@@ -128,6 +131,7 @@ class FakeFirmware:
             # DISABLED; DISABLE in ARMING or ACTIVE goes through STOPPING to DISABLED.
             if message_type == TYPE_ENABLE:
                 self.enable_count += 1
+                self.stop_reason = 0
                 if self.state == STATE_DISABLED and not self.ignored_enable:
                     self.state = STATE_ARMING
                     self._pending = (time.monotonic() + ARMING_DELAY_S, STATE_ACTIVE)
@@ -477,6 +481,13 @@ class DiffDriveNodeTest(unittest.TestCase):
         self.press(outage_s, buttons, axes)
         self.firmware.reconnect()
 
+    def spin_until_waiting_for_neutral(self, buttons=(), axes=None) -> None:
+        # Reopening takes 0.5 to 1 s after the loss; a fixed sleep would race with it.
+        deadline = time.monotonic() + 3.0
+        while self.node._connection != "WAITING_NEUTRAL" and time.monotonic() < deadline:
+            self.press(0.02, buttons, axes)
+        self.assertEqual(self.node._connection, "WAITING_NEUTRAL")
+
     def assert_reenabled_count(self, expected: int) -> None:
         self.assertEqual(self.firmware.enable_count, expected)
         self.assertEqual(self.firmware.state, STATE_ACTIVE if expected > 1 else STATE_DISABLED)
@@ -562,20 +573,23 @@ class DiffDriveNodeTest(unittest.TestCase):
         self.assert_reenabled_count(2)
 
     def test_service_enable_while_waiting_for_neutral_ends_the_automatic_path(self):
-        self.set_parameter("auto_reenable_wait_s", 1.0)
         self.enable_by_pad()
         self.unplug_and_replug(buttons=[DEADMAN_BUTTON])
-        self.press(0.5, [DEADMAN_BUTTON])
+        self.spin_until_waiting_for_neutral([DEADMAN_BUTTON])
         self.assertTrue(self.call_enable(True).success)
         self.assertEqual(self.firmware.state, STATE_ACTIVE)
-        self.press(1.5, [DEADMAN_BUTTON])
+        self.press(0.5, [DEADMAN_BUTTON])
+        self.assert_reenabled_count(2)
+        # A path still waiting for neutral would send ENABLE once the deadman is released.
+        self.release_all(1.0)
         self.assert_reenabled_count(2)
 
     def test_start_while_waiting_for_neutral_ends_the_automatic_path(self):
         self.set_parameter("auto_reenable_wait_s", 1.0)
         self.enable_by_pad()
         self.unplug_and_replug(axes={STICK_Y_AXIS: 0.5})
-        self.press(0.3, axes={STICK_Y_AXIS: 0.5})
+        self.spin_until_waiting_for_neutral(axes={STICK_Y_AXIS: 0.5})
+        self.press(0.1, axes={STICK_Y_AXIS: 0.5})
         self.press(0.4, [START_BUTTON])
         self.assertEqual(self.firmware.state, STATE_ACTIVE)
         self.release_all(1.5)
@@ -622,11 +636,44 @@ class DiffDriveNodeTest(unittest.TestCase):
     def test_back_while_waiting_for_neutral_cancels_the_reenable(self):
         self.enable_by_pad()
         self.unplug_and_replug(buttons=[DEADMAN_BUTTON])
-        self.press(0.3, [DEADMAN_BUTTON])
+        self.spin_until_waiting_for_neutral([DEADMAN_BUTTON])
         self.press(0.2, [DEADMAN_BUTTON, BACK_BUTTON])
         self.press(0.3, [DEADMAN_BUTTON])
         self.release_all(1.0)
         self.assert_reenabled_count(1)
+
+    def test_firmware_that_stopped_itself_before_the_disconnect_is_not_reenabled(self):
+        self.firmware.ignored_enable = True
+        self.release_all()
+        self.press(0.1, [START_BUTTON])  # The node waits for ACTIVE for STATE_WAIT_S.
+        self.firmware.set_state(STATE_DISABLED, 5)  # arming timeout
+        self.spin_for(0.15)
+        self.firmware.ignored_enable = False
+        self.unplug_and_replug()
+        self.release_all(2.0)
+        self.assertEqual(self.firmware.enable_count, 1)
+        self.assertEqual(self.firmware.state, STATE_DISABLED)
+
+    def test_status_that_went_silent_before_the_disconnect_is_not_trusted(self):
+        self.enable_by_pad()
+        self.firmware.is_status_sent = False
+        self.spin_for(0.6)
+        self.firmware.is_status_sent = True
+        self.unplug_and_replug()
+        self.release_all(2.0)
+        self.assert_reenabled_count(1)
+
+    def test_service_enable_during_automatic_arming_starts_the_settle_window(self):
+        self.set_parameter("joy_enable_button", -1)
+        self.assertTrue(self.call_enable(True).success)
+        self.unplug_and_replug()
+        deadline = time.monotonic() + 3.0
+        while self.node._connection != "ARMING" and time.monotonic() < deadline:
+            self.executor.spin_once(timeout_sec=0.002)
+        self.assertEqual(self.node._connection, "ARMING")
+        self.assertTrue(self.call_enable(True).success)
+        self.assertGreater(self.node._ignore_commands_until, time.monotonic())
+        self.assertEqual(self.node._connection, "CONNECTED")
 
     def test_replug_after_a_manual_disable_stays_disabled(self):
         self.enable_by_pad()

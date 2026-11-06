@@ -52,19 +52,21 @@ ENABLE_SETTLE_S = 0.1
 MIN_COMMAND_LOSS_DECELERATION_RPM_PER_S = 200.0
 STATE_WAIT_S = 1.5
 JOY_NEUTRAL_THRESHOLD = 0.1
+STATUS_STALE_S = 0.35  # STATUS comes at 10 Hz; older than this, the cached state is not trusted.
 JOY_STALE_S = 0.5  # A longer silence on /joy means joy_node restarted or the pad was replugged.
 # STATUS comes at 10 Hz, so a DISABLED seen right after the request may be older than it.
 DISABLE_CONFIRM_S = 0.15
 RECONNECT_PERIOD_S = 0.5
 STATE_ARMING = 1
 STATE_STOPPING = 3
-# Connection states. RECONNECTING and WAITING_STATUS have no usable board; WAITING_NEUTRAL
-# and REARMING are the automatic re-enable after a reconnect.
+# Connection states, named as in the design of Issue #6. RECONNECTING and WAITING_STATUS have
+# no usable board; WAITING_NEUTRAL and ARMING are the automatic re-enable after a reconnect
+# (a pad-started ENABLE leaves the connection state at CONNECTED).
 CONNECTED = "CONNECTED"
 RECONNECTING = "RECONNECTING"
 WAITING_STATUS = "WAITING_STATUS"
 WAITING_NEUTRAL = "WAITING_NEUTRAL"
-REARMING = "REARMING"
+ARMING = "ARMING"
 PORT_PATTERNS = ("/dev/cu.usbmodem*", "/dev/ttyACM*")
 WIRING_PARAMETERS = {"left_motor_id", "left_sign", "right_sign"}
 DRIVE_PARAMETERS = {
@@ -142,7 +144,12 @@ class LoggingBridge(Bridge):
 
     def __init__(self, port: str, logger):
         self._logger = logger
+        self.last_status_time = None
         super().__init__(port)
+
+    def _on_status(self, state: int, stop_reason: int) -> None:
+        self.last_status_time = time.monotonic()
+        super()._on_status(state, stop_reason)
 
     def on_status_changed(self, state: int, stop_reason: int) -> None:
         self._logger.info(f"bridge state={STATE_NAMES.get(state, state)} "
@@ -196,7 +203,7 @@ class DiffDriveNode(Node):
         self._lost_at = 0.0
         self._next_reconnect_at = 0.0
         self._status_deadline = 0.0
-        self._neutral_deadline = 0.0
+        self._reconnected_at = 0.0
         self._last_joy_axes = None
         self._requested = WheelTargets()
         self._output = WheelTargets()
@@ -222,7 +229,7 @@ class DiffDriveNode(Node):
 
     @property
     def _is_board_ready(self) -> bool:
-        return self._connection in (CONNECTED, WAITING_NEUTRAL, REARMING)
+        return self._connection in (CONNECTED, WAITING_NEUTRAL, ARMING)
 
     def _describe_state(self) -> str:
         stop_reason = 0 if self._bridge is None else self._bridge.stop_reason
@@ -418,8 +425,11 @@ class DiffDriveNode(Node):
         if self._arming_deadline is None:
             self._begin_arming()
         is_active = self._bridge.wait_for_state(STATE_ACTIVE, STATE_WAIT_S)
-        if self._connection != REARMING:  # The control timer finishes an automatic arming.
+        if self._connection != ARMING:
             self._finish_arming()
+        elif is_active:
+            self._finish_arming()  # Start the settle window now, not at the next timer tick.
+            self._finish_rearming()
         return is_active
 
     def _begin_arming(self) -> None:
@@ -440,9 +450,9 @@ class DiffDriveNode(Node):
             return
         if self._bridge.state == STATE_ACTIVE:
             self._finish_arming()
-            if self._connection == REARMING:
+            if self._connection == ARMING:
                 self._finish_rearming()
-        elif now > self._arming_deadline and self._connection == REARMING:
+        elif now > self._arming_deadline and self._connection == ARMING:
             self._arming_deadline = None
             self._connection = CONNECTED
             self._was_enabled = False
@@ -459,9 +469,7 @@ class DiffDriveNode(Node):
         # timeout stops the motors. No retry limit (user decision): every loss is logged.
         if not self._is_board_ready:
             return
-        was_enabled = (self._was_enabled or self._arming_deadline is not None
-                       or (self._disable_requested_at is None
-                           and self._firmware_state in (STATE_ARMING, STATE_ACTIVE)))
+        was_enabled = self._was_enabled or self._is_enabled_by_last_status(time.monotonic())
         state_name = STATE_NAMES.get(self._firmware_state, "unknown")
         self._close_bridge()
         self._was_enabled = was_enabled
@@ -478,6 +486,17 @@ class DiffDriveNode(Node):
                                 f"(was {state_name}, disconnect #{self._disconnect_count} "
                                 f"since start)")
 
+    def _is_enabled_by_last_status(self, now: float) -> bool:
+        # Judged from the last STATUS only: a firmware that stopped itself (feedback lost,
+        # arming timeout, ...) must not be switched on again by a reconnect.
+        bridge = self._bridge
+        if self._disable_requested_at is not None or bridge.stop_reason != 0:
+            return False
+        if bridge.last_status_time is None or now - bridge.last_status_time > STATUS_STALE_S:
+            return False
+        return bridge.state in (STATE_ARMING, STATE_ACTIVE) or (
+            bridge.state == STATE_DISABLED and self._arming_deadline is not None)
+
     def _advance_reconnect(self, now: float) -> None:
         if self._connection == RECONNECTING:
             self._try_open_board(now)
@@ -485,7 +504,7 @@ class DiffDriveNode(Node):
         try:
             self._bridge.poll(0.0)
         except OSError as error:
-            self._abort_reconnect(now, str(error))
+            self._abort_reconnect(now, str(error), throttle_duration_sec=5.0)
             return
         if self._bridge.state == STATE_DISABLED:
             self._finish_reconnect(now)
@@ -506,11 +525,12 @@ class DiffDriveNode(Node):
         self._connection = WAITING_STATUS
         self._status_deadline = now + STATE_WAIT_S
 
-    def _abort_reconnect(self, now: float, reason: str) -> None:
+    def _abort_reconnect(self, now: float, reason: str, throttle_duration_sec=None) -> None:
         self._close_bridge()
         self._connection = RECONNECTING
         self._next_reconnect_at = now + RECONNECT_PERIOD_S
-        self.get_logger().warn(f"reconnect failed: {reason}")
+        self.get_logger().warn(f"reconnect failed: {reason}",
+                               throttle_duration_sec=throttle_duration_sec)
 
     def _finish_reconnect(self, now: float) -> None:
         self.get_logger().warn(f"board reconnected on {self._port} after "
@@ -518,7 +538,7 @@ class DiffDriveNode(Node):
                                f"(disconnect #{self._disconnect_count} since start)")
         if self._was_enabled:
             self._connection = WAITING_NEUTRAL
-            self._neutral_deadline = now + self._auto_reenable_wait_s
+            self._reconnected_at = now
         else:
             self._connection = CONNECTED
 
@@ -534,9 +554,9 @@ class DiffDriveNode(Node):
         if self._connection != WAITING_NEUTRAL:
             return
         if self._is_pad_neutral(now):
-            self._connection = REARMING
+            self._connection = ARMING
             self._begin_arming()
-        elif now > self._neutral_deadline:
+        elif now > self._reconnected_at + self._auto_reenable_wait_s:  # Live: edits apply.
             self._connection = CONNECTED
             self._was_enabled = False
             self.get_logger().error(
@@ -554,7 +574,7 @@ class DiffDriveNode(Node):
         if not self._was_enabled:
             return
         self._was_enabled = False
-        if self._connection in (WAITING_NEUTRAL, REARMING):
+        if self._connection in (WAITING_NEUTRAL, ARMING):
             self._connection = CONNECTED
         self.get_logger().info(f"auto re-enable cancelled by {source}")
 
