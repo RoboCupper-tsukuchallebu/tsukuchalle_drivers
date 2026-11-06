@@ -380,8 +380,10 @@ class DiffDriveNode(Node):
             self._bridge.poll(0.0)
             self._check_disabling(now)
             self._check_arming(now)
-            if self._bridge.state != STATE_ACTIVE:
-                # Never resume at speed after the firmware has stopped on its own.
+            if self._bridge.state != STATE_ACTIVE or self._disable_requested_at is not None:
+                # Never resume at speed after the firmware has stopped on its own. Right after
+                # DISABLE the cached ACTIVE is stale for up to a STATUS period, and a
+                # SET_VELOCITY to the stopping firmware is answered with "invalid state".
                 self._output = WheelTargets()
                 return
             rate_rpm_per_s = self._config.max_acceleration_rpm_per_s

@@ -299,6 +299,15 @@ class DiffDriveNodeTest(unittest.TestCase):
         self.release_all(0.4)
         self.assertEqual(self.firmware.state, STATE_DISABLED)
 
+    def test_back_sends_no_velocity_to_a_stopping_firmware(self):
+        self.enable_by_pad()
+        self.firmware.rejected_velocity_count = 0
+        self.press(0.1, [BACK_BUTTON])
+        self.release_all(0.4)
+        self.assertEqual(self.firmware.state, STATE_DISABLED)
+        # SET_VELOCITY outside ACTIVE makes the firmware answer "invalid state".
+        self.assertEqual(self.firmware.rejected_velocity_count, 0)
+
     def test_deadman_held_blocks_enable(self):
         self.release_all()
         self.press(0.3, [DEADMAN_BUTTON, START_BUTTON])
