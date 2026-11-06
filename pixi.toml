@@ -1,7 +1,7 @@
 [workspace]
 name = "ddt-can-bridge"
 channels = ["https://prefix.dev/robostack-jazzy", "https://prefix.dev/conda-forge"]
-platforms = ["osx-arm64"]
+platforms = ["osx-arm64", "linux-64"]
 
 [dependencies]
 ros-jazzy-ros-base = "*"
