@@ -1,5 +1,5 @@
 # Generic / Xbox-style pad. Check axis and button numbers with `ros2 topic echo /joy`.
-# Wheels lifted for the first test. Speeds are deliberately low.
+# Speeds raised on 2026-11-06 after wheels-lifted and on-ground tests (0.3 m/s, 1.0 rad/s before).
 teleop_twist_joy_node:
   ros__parameters:
     require_enable_button: true  # deadman: moves only while this button is held
@@ -9,10 +9,10 @@ teleop_twist_joy_node:
     axis_linear:
       x: 1                       # left stick, up/down
     scale_linear:
-      x: 0.3                     # m/s at full stick
+      x: 0.6                     # m/s at full stick
     axis_angular:
       yaw: 0                     # left stick, left/right
     scale_angular:
-      yaw: 1.0                   # rad/s at full stick
+      yaw: 1.5                   # rad/s at full stick
     inverted_reverse: false
     publish_stamped_twist: false
