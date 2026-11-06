@@ -15,6 +15,11 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: make
+      - name: Check pinned toolchain versions
+        run: |
+          docker run --rm ddt-can-bridge-firmware:latest arm-none-eabi-gcc --version | grep -F "13.3.1 20240614"
+          docker run --rm ddt-can-bridge-firmware:latest git -C /opt/pico-sdk describe --tags | grep -Fx "2.3.1"
+          docker run --rm ddt-can-bridge-firmware:latest picotool version | grep -F "v2.3.1"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ddt_can_bridge-uf2
