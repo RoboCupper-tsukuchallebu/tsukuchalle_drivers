@@ -127,10 +127,13 @@ class VelodynePipelineTest(unittest.TestCase):
         subscription = node.create_subscription(
             PointCloud2, "/velodyne_points", serialized_clouds.append, RELIABLE_QOS, raw=True
         )
-        # nav-stack subscribes with SensorDataQoS; a match with the reliable publisher is the
-        # compatibility check. Its frames are not counted: in a container, Fast DDS drops 1.5 MB
-        # best-effort samples (all of them in one CI run, 20 to 80 % on the build machine,
-        # while the reliable subscription above got 17 to 20 of 20).
+        # nav-stack subscribes with SensorDataQoS, so a match of a best-effort subscription with
+        # the reliable publisher is the compatibility check. It is destroyed before sending:
+        # its frames are not counted, and it would compete with the reliable one for the
+        # publisher's shared memory segment. Best-effort frames do get lost: with
+        # ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST the rmw adds a default Fast DDS shared memory
+        # transport whose 512 KiB segment overflows when one 1.5 MB sample (about 24 fragments
+        # of 64 KB) is sent, and best-effort does not retransmit. Tracked in a separate issue.
         best_effort_subscription = node.create_subscription(
             PointCloud2, "/velodyne_points", lambda _: None, qos_profile_sensor_data, raw=True
         )
@@ -145,6 +148,7 @@ class VelodynePipelineTest(unittest.TestCase):
                 DEADLINE_SECONDS,
             )
             self.assertTrue(ready, f"nodes were not discovered in time:\n{processes.log_text()}")
+            node.destroy_subscription(best_effort_subscription)
 
             sender = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             self.addCleanup(sender.close)
@@ -158,20 +162,8 @@ class VelodynePipelineTest(unittest.TestCase):
                 next_send_time += BATCH_INTERVAL_SECONDS
                 spin_until(node, lambda: False, max(next_send_time - time.monotonic(), 0))
 
-            last_count = -1
-            last_change = time.monotonic()
-
-            def finished():
-                nonlocal last_count, last_change
-                if len(serialized_clouds) != last_count:
-                    last_count = len(serialized_clouds)
-                    last_change = time.monotonic()
-                return (
-                    last_count >= REVOLUTION_COUNT
-                    or time.monotonic() - last_change > IDLE_SECONDS
-                )
-
-            spin_until(node, finished, DEADLINE_SECONDS)
+            # Stop at the full count or the deadline; frames can arrive late on a slow runner.
+            spin_until(node, lambda: len(serialized_clouds) >= REVOLUTION_COUNT, DEADLINE_SECONDS)
             driver_log = processes.log_text()
 
         received_clouds = [deserialize_message(raw, PointCloud2) for raw in serialized_clouds]
