@@ -25,3 +25,14 @@ jobs:
           name: ddt_can_bridge-uf2
           path: build/docker/firmware/ddt_can_bridge.uf2
           if-no-files-found: error
+
+  udev:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Verify rules and install script
+        run: |
+          udevadm verify scripts/udev/70-tsukuchalle.rules
+          bash -n scripts/udev/install.sh
+          rc=0; bash scripts/udev/install.sh 2>usage.txt || rc=$?
+          test "$rc" -eq 2 && test -s usage.txt

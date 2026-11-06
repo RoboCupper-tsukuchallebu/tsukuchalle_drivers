@@ -123,7 +123,7 @@ Mac からはビルド機へ `ssh <ビルド機>` で入って実行します。
 scripts/deploy.sh <ロボットのSSH先>
 ```
 
-ビルド、`docker save | gzip | ssh ... docker load`、`latest` タグ付け、`~/ddt-can-bridge/` への `compose.yaml` と `config/` の送付までを行い、最後に起動コマンドを表示します。圧縮後のイメージはおよそ370MBで、LAN内の1回転送です（所要時間は実測して追記してください）。ビルド機とロボット PC の `uname -m` が違うと中止します。経路だけ試すときは、ビルド機自身（`nyanziba@localhost`）を送り先にします。
+ビルド、`docker save | gzip | ssh ... docker load`、`latest` タグ付け、`~/ddt-can-bridge/` への `compose.yaml`・`config/`・`udev/` の送付までを行い、最後に起動コマンドを表示します。圧縮後のイメージはおよそ370MBで、LAN内の1回転送です（所要時間は実測して追記してください）。ビルド機とロボット PC の `uname -m` が違うと中止します。経路だけ試すときは、ビルド機自身（`nyanziba@localhost`）を送り先にします。
 
 ### 起動（ロボット PC の `~/ddt-can-bridge/`）
 
@@ -133,7 +133,7 @@ echo 'DDT_SERIAL_DEVICE=/dev/serial/by-id/usb-...' > ~/ddt-can-bridge/.env
 docker compose up -d drive joy teleop                # この時点ではモーターは無効
 ```
 
-`DDT_SERIAL_DEVICE` は必須で、未設定だと **`down`・`ps`・`logs` を含む compose のすべてのコマンド**が `required variable DDT_SERIAL_DEVICE is missing` で止まります（`.env` か `export` のどちらかで設定してください）。`scripts/deploy.sh` が送るのは `compose.yaml` と `config/` だけで、`.env` は上書きも削除もしません。`.env` はリポジトリには置きません（`.gitignore` 済み）。
+`DDT_SERIAL_DEVICE` は必須で、未設定だと **`down`・`ps`・`logs` を含む compose のすべてのコマンド**が `required variable DDT_SERIAL_DEVICE is missing` で止まります（`.env` か `export` のどちらかで設定してください）。`scripts/deploy.sh` が送るのは `compose.yaml`・`config/`・`udev/` だけで、`.env` は上書きも削除もしません。`.env` はリポジトリには置きません（`.gitignore` 済み）。
 
 動かすには車輪を浮かせて、パッドで有効化します（コンテナの起動では有効化しません）。**Start で有効化、Back で無効化**します（ボタン番号は下の `/joy` で確認）。デッドマン（A）を離し、左スティックを中立に戻してから Start を押してください。そうでないと `enable ignored: ...` の警告が出て有効化しません。
 
@@ -159,8 +159,17 @@ docker compose run --rm teleop-keyboard
 - ボタン・軸の番号が違うパッドは、`docker compose exec joy /ws/ros2/docker-entrypoint.sh ros2 topic echo /joy` で確認して `config/teleop_twist_joy.yaml` を直し、`docker compose up -d --force-recreate teleop` で反映します。Start・Back・デッドマンの番号と中立を見る軸は `ros2/ddt_diff_drive/config/diff_drive.yaml`（`joy_*`）にもあるので、**両方を同じ番号に直してください**（片方だけ直すと、有効化の誤操作防止が黙って効かなくなります）。`diff_drive.yaml` は `drive` のイメージに焼き込まれているので、`teleop` の `--force-recreate` だけでは反映されません。ビルド機で `scripts/deploy.sh <ロボットのSSH先>` を実行してイメージを作り直して送り、ロボット PC で `docker compose up -d drive` します。反映後は `docker compose exec drive /ws/ros2/docker-entrypoint.sh ros2 param get /diff_drive_node joy_deadman_button` で値を確かめてください。初期値は 0.6 m/s、1.5 rad/s です（2026-11-06 に車輪を浮かせた試験と地面での走行で確認し、0.3 m/s、1.0 rad/s から引き上げ）。**初めて走らせるロボットや床では、スティックを浅く倒して低速で確かめてください。** A を離してから止まるまで、最高速から約 0.8 秒（約 0.3 m）かかります。
 - `joy` は `/dev/input` を丸ごと読めるため、コンテナ内からホストのキーボード入力も読めます。専用のロボット PC を前提にしています。
 - USB を抜き差ししたり、基板がリセットしたりしても、`drive` は終了せず、ノードが基板を開き直します（`lost the board` は ERROR、`board reconnected` は WARN で、累計回数つきで毎回ログに出ます。回数の上限はありません）。有効だったときは、デッドマン（A）が離されスティックが中立になってから自動で再有効化します（`auto re-enabled after board reconnect`）。`auto_reenable_wait_s`（10 秒）以内に中立にならないと `auto re-enable abandoned` を出して無効のままになるので、Start で有効化してください。切断中に Back（または `data: false`）を押すと、再有効化は取り消されます。`joy_node` の `autorepeat_rate` を 0 にすると中立を判定できず、必ず諦めます。ファーム側の停止（`feedback lost` など）からは自動復帰しません。なお起動時に基板が無いと、`drive` は従来どおり終了します。
-- `DDT_SERIAL_DEVICE` は `/dev/serial/by-id/usb-...` を指定してください。`/dev/ttyACM0` を固定で指定すると、再列挙で `ttyACM1` になったときに永久に再接続できません。`drive` は `/dev` を丸ごと見る（`devices:` は作成時に固定され、再列挙に追従できないため）ので、`joy` と同様に専用のロボット PC を前提にしています。`/dev` は再帰的に見えるため、ホストの `/dev/pts`・`/dev/ptmx` にもコンテナの root から届きます。
+- `DDT_SERIAL_DEVICE` は `/dev/serial/by-id/usb-...` か `/dev/ddt_board`（下の udev ルールの symlink）を指定してください。`/dev/ttyACM0` を固定で指定すると、再列挙で `ttyACM1` になったときに永久に再接続できません。`drive` は `/dev` を丸ごと見る（`devices:` は作成時に固定され、再列挙に追従できないため）ので、`joy` と同様に専用のロボット PC を前提にしています。`/dev` は再帰的に見えるため、ホストの `/dev/pts`・`/dev/ptmx` にもコンテナの root から届きます。
 - ModemManager が動いていると、挿した直後の `ttyACM` に AT コマンドを送ることがあります。ノードの排他ロック（TIOCEXCL）は open 後にしか効きません。`mmcli -L` と `journalctl -u ModemManager` で確認し、症状が出たら `sudo systemctl mask --now ModemManager` してください。再列挙のたびにプローブされると、再接続が `EBUSY` になったり、AT コマンドが基板に流れたりします。`reconnect failed` が続くときも mask してください。
+
+### udev ルール（シリアル機器の symlink）
+
+`scripts/udev/70-tsukuchalle.rules` が、RP2350-CAN を `/dev/ddt_board`、DATAGNSS MA-10P を `/dev/ma10p_nmea`（if00）・`/dev/ma10p_info`（if02）にし、`dialout` 0660 と ModemManager 除外（`ID_MM_DEVICE_IGNORE=1`）を付けます。シリアル番号で 1 台ずつ指定しています。
+
+- 設置: deploy の後、ロボット PC で `sudo bash ~/ddt-can-bridge/udev/install.sh`。`udevadm verify` の後に設置済みとの `diff -u` を表示します。同一なら `already installed` で何もせず終了します。差分があれば設置して reload し、tty だけに change を飛ばします（`joy` の input や USB LAN の net には影響しません）。deploy は sudo をしません。
+- 基板・受信機を替えたとき: `udevadm info -q property -n /dev/ttyACM0 | grep -E 'ID_VENDOR_ID|ID_MODEL_ID|ID_SERIAL_SHORT|ID_USB_INTERFACE_NUM'` で値を取り、`70-tsukuchalle.rules` を直して PR（CI の `udevadm verify` が通ること）、deploy、`install.sh` の順です。
+- ルール番号 70 は、`60-serial.rules`（`ID_SERIAL_SHORT`・`ID_USB_INTERFACE_NUM` を付ける）より後、ModemManager の `77-mm-*.rules` より前です。リネームするときはこの範囲を守ってください。
+- 2 台目のロボットは同じファイルに足さず `71-<名前>.rules` を別に作ります（シリアル番号は秘密ではないので直書きでよい）。
 
 ### ROS 2 の通信範囲
 
