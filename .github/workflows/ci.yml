@@ -25,3 +25,13 @@ jobs:
           name: ddt_can_bridge-uf2
           path: build/docker/firmware/ddt_can_bridge.uf2
           if-no-files-found: error
+
+  velodyne:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: docker build -f ros2/velodyne/Dockerfile -t tsukuchalle-velodyne:ci .
+      # The base image's ENTRYPOINT (/ros_entrypoint.sh) sources ROS. The tests are mounted,
+      # not baked into the image.
+      - name: Feed synthetic HDL-32E packets through driver and transform
+        run: docker run --rm -v "$PWD/ros2/velodyne:/test:ro" tsukuchalle-velodyne:ci python3 -m unittest discover -s /test -v
