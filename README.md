@@ -104,6 +104,57 @@ pixi run ros2 param set /diff_drive_node max_wheel_rpm 50.0
 
 ノードは実行中の変更を受け付けますが、ファイルには保存しません。確定した値は `ros2/ddt_diff_drive/config/diff_drive.yaml` に書いてください。`pixi run drive` はこのファイルを直接読みます。
 
+## ロボット PC で動かす（Docker）
+
+ロボット PC には pixi を入れず、Docker イメージで `drive`（ノード）、`joy`（ジョイスティック）、`teleop`（`/joy` から `/cmd_vel`）を動かします。Mac では実機を運転できません（Mac の Docker は arm64 で、ビルドと試験のみ）。
+
+### 配布（ビルド機で実行）
+
+Mac からはビルド機へ `ssh <ビルド機>` で入って実行します。送りたいコミットをビルド機の clone で checkout し、作業ツリーを clean にしてから実行します（未 commit の変更があると中止します）。ビルド機からロボット PC へ鍵認証の ssh が通り、両方で `docker` が sudo なしで使えることが前提です。
+
+```sh
+scripts/deploy.sh <ロボットのSSH先>
+```
+
+ビルド、`docker save | gzip | ssh ... docker load`、`latest` タグ付け、`~/ddt-can-bridge/` への `compose.yaml` と `config/` の送付までを行い、最後に起動コマンドを表示します。圧縮後のイメージはおよそ370MBで、LAN内の1回転送です（所要時間は実測して追記してください）。ビルド機とロボット PC の `uname -m` が違うと中止します。経路だけ試すときは、ビルド機自身（`nyanziba@localhost`）を送り先にします。
+
+### 起動（ロボット PC の `~/ddt-can-bridge/`）
+
+```sh
+export DDT_SERIAL_DEVICE=/dev/serial/by-id/usb-...   # 省略時は /dev/ttyACM0
+docker compose up -d drive joy teleop                # この時点ではモーターは無効
+```
+
+動かすには車輪を浮かせて、手動で有効化します（コンテナの起動では有効化しません）。`exec` は entrypoint を通らないため、`docker-entrypoint.sh` 経由で呼びます。
+
+```sh
+docker compose exec drive /ws/ros2/docker-entrypoint.sh ros2 service call /diff_drive_node/enable std_srvs/srv/SetBool "{data: true}"
+```
+
+`enable_button`（初期値は0番、Xbox系のA）を**押している間だけ**、左スティックの上下で前後、左右で旋回します。離すと止まります。無効化は `data: false`、またはコンテナの停止です。
+
+```sh
+docker compose logs -f drive teleop     # 状態の確認
+docker compose stop                     # SIGTERMで停止処理（DISABLE）を実行（Ctrl-Cや down でも同じ）
+```
+
+キーボードで動かすときは、ジョイスティックの代わりに次を使います。
+
+```sh
+docker compose run --rm teleop-keyboard
+```
+
+- ボタン・軸の番号が違うパッドは、`docker compose exec joy /ws/ros2/docker-entrypoint.sh ros2 topic echo /joy` で確認して `config/teleop_twist_joy.yaml` を直し、`docker compose up -d --force-recreate teleop` で反映します。初期値は低速（0.3 m/s、1.0 rad/s）です。
+- `joy` は `/dev/input` を丸ごと読めるため、コンテナ内からホストのキーボード入力も読めます。専用のロボット PC を前提にしています。
+- USBを抜き差ししたり、基板がリセットしたりしたら、`drive` はコンテナごと終了します（再起動しません）。挿し直して `docker compose up -d drive` で復帰します。`devices:` は作成時に固定されるためです。基板が無いと `drive` はコンテナ作成時に失敗します。
+- ModemManager が動いていると、挿した直後の `ttyACM` に AT コマンドを送ることがあります。ノードの排他ロック（TIOCEXCL）は open 後にしか効きません。`mmcli -L` と `journalctl -u ModemManager` で確認し、症状が出たら `sudo systemctl mask --now ModemManager` してください。
+
+### ROS 2 の通信範囲
+
+- 既定は `ROS_DOMAIN_ID=42`、`ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST` です。同じ LAN の別 PC のトピックは見えず、`/cmd_vel` も受けません。別 PC（Mac の pixi など）から操作するときだけ、起動前に `export ROS_AUTOMATIC_DISCOVERY_RANGE=SUBNET` を付けて `docker compose up -d` し直します。
+- LOCALHOST では Fast DDS が同じホスト内の通信に共有メモリを使います（`FASTDDS_BUILTIN_TRANSPORTS=UDPv4` は効きません）。そのため compose は全サービスに `ipc: host` を付けています。compose を使わず `docker run` で同じドメインに参加するコンテナには `--ipc host` が要ります。
+- イメージの `FASTDDS_BUILTIN_TRANSPORTS=UDPv4` が効くのは、`SUBNET` などに上書きしたときです。
+
 ## 安全動作
 
 - **基板はUSB給電のため、USBが抜けると停止処理を実行できません。24Vをすぐ遮断できる非常停止を用意してください。**

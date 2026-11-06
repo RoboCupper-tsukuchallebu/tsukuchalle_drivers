@@ -1,0 +1,56 @@
+# Run from the directory holding this file (scripts/deploy.sh puts it in ~/ddt-can-bridge/ with config/).
+# DDT_SERIAL_DEVICE: host path of the board (prefer /dev/serial/by-id/...).
+# DDT_IMAGE_TAG: image tag, default latest.
+x-ros-common: &ros-common
+  image: ddt-can-bridge-ros2:${DDT_IMAGE_TAG:-latest}
+  network_mode: host
+  # LOCALHOST discovery uses shared memory between processes on one host; it does not cross
+  # containers unless they share the IPC namespace.
+  ipc: host
+  init: true
+  restart: "no"
+  environment:
+    ROS_DOMAIN_ID: ${ROS_DOMAIN_ID:-42}
+    ROS_AUTOMATIC_DISCOVERY_RANGE: ${ROS_AUTOMATIC_DISCOVERY_RANGE:-LOCALHOST}
+
+services:
+  # Starts with the motors disabled. Enable by hand: see README.
+  drive:
+    <<: *ros-common
+    devices:
+      - "${DDT_SERIAL_DEVICE:-/dev/ttyACM0}:/dev/ttyACM0"
+
+  # Moves only while enable_button is held. Swap the mapping by editing config/teleop_twist_joy.yaml.
+  teleop:
+    <<: *ros-common
+    command:
+      - /opt/ros/jazzy/lib/teleop_twist_joy/teleop_node
+      - --ros-args
+      - --params-file
+      - /config/teleop_twist_joy.yaml
+    volumes:
+      - ./config/teleop_twist_joy.yaml:/config/teleop_twist_joy.yaml:ro
+
+  # Joystick to /joy. /dev/input is mounted whole so a pad plugged in later is seen; 13 is the input major number.
+  joy:
+    <<: *ros-common
+    command:
+      - /opt/ros/jazzy/lib/joy/joy_node
+      - --ros-args
+      - -p
+      - autorepeat_rate:=20.0
+      - -p
+      - deadzone:=0.1
+    volumes:
+      - /dev/input:/dev/input
+      - /run/udev:/run/udev:ro
+    device_cgroup_rules:
+      - "c 13:* rmw"
+
+  # Keyboard fallback: docker compose run --rm teleop-keyboard
+  teleop-keyboard:
+    <<: *ros-common
+    profiles: [keyboard]
+    stdin_open: true
+    tty: true
+    command: ros2 run teleop_twist_keyboard teleop_twist_keyboard
