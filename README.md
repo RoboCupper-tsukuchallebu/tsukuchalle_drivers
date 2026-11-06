@@ -90,6 +90,44 @@ pixi run ros2 param set /diff_drive_node max_wheel_rpm 50.0
 
 ノードは実行中の変更を受け付けますが、ファイルには保存しません。確定した値は `ros2/ddt_diff_drive/config/diff_drive.yaml` に書いてください。`pixi run drive` はこのファイルを直接読みます。
 
+## ROS 2 を Docker で動かす（ロボット PC）
+
+ロボット PC には pixi を入れず、Docker イメージで `drive`（ノード）、`joy`（ジョイスティック）、`teleop`（`/joy` から `/cmd_vel`）を動かします。ドメインIDは42、DDSの公開範囲は `LOCALHOST`、転送はUDPのみです（変更は環境変数 `ROS_DOMAIN_ID`、`ROS_AUTOMATIC_DISCOVERY_RANGE`）。
+
+### 配布（ビルド機で実行）
+
+送りたいコミットをビルド機の clone で checkout してから実行します。ビルド機からロボット PC へ鍵認証の ssh が通ることが前提です。
+
+```sh
+scripts/deploy.sh <ロボットのSSH先>   # ビルドして docker save | gzip | ssh ... docker load。圧縮後およそ370MB
+```
+
+ロボット PC には、イメージに加えて `ros2/compose.yaml` と `ros2/config/` を同じ階層で置きます（例: `~/ddt-ros2/compose.yaml`、`~/ddt-ros2/config/teleop_twist_joy.yaml`）。
+
+### 起動（ロボット PC で、compose.yaml のある場所）
+
+```sh
+export DDT_SERIAL_DEVICE=/dev/serial/by-id/usb-...   # 省略時は /dev/ttyACM0
+docker compose up -d drive joy teleop                # この時点ではモーターは無効
+```
+
+動かすには車輪を浮かせて、手動で有効化します（コンテナの起動では有効化しません）。
+
+```sh
+docker compose run --rm --no-deps drive ros2 service call /diff_drive_node/enable std_srvs/srv/SetBool "{data: true}"
+```
+
+`enable_button`（初期値は0番、Xbox系のA）を**押している間だけ**、左スティックの上下で前後、左右で旋回します。離すと止まります。無効化は `data: false`、またはコンテナの停止です。
+
+```sh
+docker compose logs -f drive teleop     # 状態の確認
+docker compose stop                     # SIGTERMで停止処理（DISABLE）を実行
+```
+
+- ボタン・軸の番号が違うパッドは、`docker compose run --rm --no-deps joy ros2 topic echo /joy` で確認して `config/teleop_twist_joy.yaml` を直し、`docker compose up -d --force-recreate teleop` で反映します。初期値は低速（0.3 m/s、1.0 rad/s）です。
+- USBを抜き差ししたら `docker compose up -d --force-recreate drive` で作り直します（`devices:` は作成時に固定されます）。基板が無いと `drive` はコンテナ作成時に失敗します。
+- ModemManager が動いていると、挿した直後に基板へ AT コマンドを送られることがあります。症状が出たら `mmcli -L` と `journalctl -u ModemManager` を確認してください。
+
 ## 安全動作
 
 - **基板はUSB給電のため、USBが抜けると停止処理を実行できません。24Vをすぐ遮断できる非常停止を用意してください。**

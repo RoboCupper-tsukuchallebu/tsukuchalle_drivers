@@ -5,6 +5,8 @@ x-ros-common: &ros-common
     context: ..
     dockerfile: ros2/Dockerfile
   network_mode: host
+  # With LOCALHOST discovery Fast DDS uses shared memory, which does not cross containers without this.
+  ipc: host
   init: true
   restart: "no"
   environment:
