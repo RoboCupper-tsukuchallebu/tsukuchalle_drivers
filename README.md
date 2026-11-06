@@ -7,26 +7,40 @@ M1502A 2台を無負荷、10rpm、2秒で駆動して動作を確認しました
 
 ## 必要なもの
 
-- Pico SDK 2.3.1（`PICO_SDK_PATH`）、CMake、Ninja、arm-none-eabi-gcc
-- Python 3.10以上（追加ライブラリなし。macOS/Linuxのみ）
+- DockerとGNU make（Pico SDK、picotool、arm-none-eabi-gcc、CMake、Ninjaはイメージに入っています）
+- 「使い方」でホストから基板を操作するにはPython 3.10以上（追加ライブラリなし。macOS/Linuxのみ）
+- ビルド・テストをDockerなしで行う場合は「Dockerを使わない場合」を参照
 
 ## テスト
+
+```sh
+make test    # tests/ のctest（ASan/UBSan）と host/ のunittest
+```
+
+## ビルド
+
+```sh
+make         # test と firmware
+make firmware
+```
+
+初回は `make image` でイメージ（Arm GNU Toolchain 13.3.Rel1、Pico SDK 2.3.1、picotool 2.3.1）をビルドします。ネットワークを使うのはこのときだけで、`make test` と `make firmware` は `--network none` で動きます。成果物は `build/docker/firmware/ddt_can_bridge.uf2` です。
+
+BOOTボタンを押しながらUSB接続し、出てきたドライブに `.uf2` をコピーします。
+
+### Dockerを使わない場合
+
+Pico SDK 2.3.1（`PICO_SDK_PATH`）、CMake、Ninja、arm-none-eabi-gcc（13.3.rel1）、Python 3.10以上が必要です。
 
 ```sh
 cmake -S tests -B build/tests -G Ninja
 cmake --build build/tests
 ctest --test-dir build/tests --output-on-failure
 (cd host && python3 -m unittest)
-```
 
-## ビルド
-
-```sh
 cmake -S firmware -B build/firmware -G Ninja
-cmake --build build/firmware
+cmake --build build/firmware    # build/firmware/ddt_can_bridge.uf2
 ```
-
-BOOTボタンを押しながらUSB接続し、出てきたドライブに `build/firmware/ddt_can_bridge.uf2` をコピーします。
 
 ## 配線
 
@@ -81,7 +95,7 @@ pixi run ros2 param set /diff_drive_node max_wheel_rpm 50.0
 |---|---|---|
 | `port` | 空 | 空なら接続中の基板を自動検出（2枚以上ならエラー）。起動時のみ |
 | `wheel_radius_m` | 0.0935 | 車輪半径。カタログ直径187mmから算出 |
-| `track_width_m` | 0.4 | **仮値。** 左右の車輪間隔を実測して設定 |
+| `track_width_m` | 0.26 | 左右の車輪間隔。2026-11-06 に実機で26cm（回転中心から各車輪13cm）と計測 |
 | `left_motor_id` | 1 | 左車輪のモーターID。もう一方が右。有効化中は変更不可 |
 | `left_sign` / `right_sign` | 1 / -1 | 前進時の回転方向。有効化中は変更不可 |
 | `max_wheel_rpm` | 100.0 | 車輪の最大速度（上限210）。飽和時は左右の比を保つ |
