@@ -29,3 +29,9 @@ diff_drive_node:
     # the check.
     joy_deadman_button: 0
     joy_neutral_axes: [0, 1]
+
+    # After a USB disconnect the node reopens the board and, if the motors were enabled, enables
+    # them again once the deadman is released and the sticks are centered. Gives up (stays
+    # DISABLED) after this many seconds from the reconnect. Needs joy_node's autorepeat_rate > 0
+    # (20 Hz in compose): with 0, no Joy arrives while idle and it always gives up.
+    auto_reenable_wait_s: 10.0
