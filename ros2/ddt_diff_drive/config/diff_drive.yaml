@@ -5,7 +5,7 @@ diff_drive_node:
 
     # Geometry.
     wheel_radius_m: 0.0935  # From the catalog diameter of 187 mm. Measure under load.
-    track_width_m: 0.22     # Measured on the robot 2026-11-06 (approx. 22 cm). Refine if turns over/undershoot.
+    track_width_m: 0.26     # Measured on the robot 2026-11-06: 26 cm (13 cm from the rotation center to each wheel).
 
     # Wheel assignment. Check with the wheels lifted; cannot change while enabled.
     left_motor_id: 1
