@@ -30,11 +30,12 @@ docker save "${imageName}:${imageTag}" | gzip | ssh "${robotTarget}" "gunzip | d
 ssh "${robotTarget}" "docker tag ${imageName}:${imageTag} ${imageName}:latest"
 
 ssh "${robotTarget}" "mkdir -p ~/ddt-can-bridge"
-scp -r ros2/compose.yaml ros2/config "${robotTarget}:~/ddt-can-bridge/"
+scp -r ros2/compose.yaml ros2/config scripts/udev "${robotTarget}:~/ddt-can-bridge/"
 
 cat <<MESSAGE
-deployed ${imageName}:${imageTag} (also latest) and compose files to ${robotTarget}:~/ddt-can-bridge/
+deployed ${imageName}:${imageTag} (also latest) and compose files, udev rules to ${robotTarget}:~/ddt-can-bridge/
 On the robot PC (wheels lifted):
+  sudo bash ~/ddt-can-bridge/udev/install.sh   # udev rules (first time, or after changing them)
   cd ~/ddt-can-bridge
   export DDT_SERIAL_DEVICE=/dev/serial/by-id/usb-...
   docker compose up -d drive joy teleop
