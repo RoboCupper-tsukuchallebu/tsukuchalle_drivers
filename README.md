@@ -125,7 +125,7 @@ scripts/deploy.sh <ロボットのSSH先> <ddt|velodyne|all>
 
 送るイメージは必須で、`ddt`（`ddt-can-bridge-ros2`）、`velodyne`（`tsukuchalle-velodyne`）、`all`（両方）のどれかを指定します。省略や未知の値は usage を出して終了 2 です。Velodyne のイメージは PCL を含んで大きいので、`ddt_diff_drive` の修正だけなら `ddt` を使います。`compose.yaml`・`config/`・`udev/` はどれを選んでも送ります。
 
-ビルド、`docker save | gzip | ssh ... docker load`、`latest` タグ付け、`~/ddt-can-bridge/` への `compose.yaml`・`config/`・`udev/` の送付までを行い、最後に起動コマンドを表示します。`ddt` の圧縮後のイメージはおよそ370MBで、LAN内の1回転送です（`ddt`・`velodyne` それぞれの所要時間は実測して追記してください）。ビルド機とロボット PC の `uname -m` が違うと中止します。経路だけ試すときは、ビルド機自身（`nyanziba@localhost`）を送り先にします。
+ビルド、`docker save | gzip | ssh ... docker load`、`latest` タグ付け、`~/ddt-can-bridge/` への `compose.yaml`・`config/`・`udev/` の送付までを行い、最後に起動コマンドを表示します。`ddt` の圧縮後のイメージはおよそ370MBで、LAN内の1回転送です（`ddt`・`velodyne` それぞれの所要時間は実測して追記してください）。ビルド機とロボット PC の `uname -m` が違うと中止します。経路だけ試すときは、ssh で届くローカルの宛先（ビルド機自身など）を送り先にします。
 
 ### 起動（ロボット PC の `~/ddt-can-bridge/`）
 
@@ -175,15 +175,28 @@ docker compose run --rm teleop-keyboard
 
 ### Velodyne HDL-32E（LiDAR）
 
-`velodyne-driver`（UDP パケットを受ける）と `velodyne-transform`（`/velodyne_points` にする）を、別イメージ `tsukuchalle-velodyne` で動かします。送るには `scripts/deploy.sh <ロボットのSSH先> velodyne`（または `all`）を実行します。
+`velodyne-driver`（UDP パケットを受ける）と `velodyne-transform`（`/velodyne_points` にする）を、別イメージ `tsukuchalle-velodyne` で動かします。送るには `scripts/deploy.sh <ロボットのSSH先> velodyne`（または `all`）を実行します。`all` はイメージを 1 つずつ送るので、2 つ目のビルドが失敗すると、1 つ目は送られて `latest` になっていますが `compose.yaml`・`udev/` は送られません。
 
 ```sh
-# 仮設コンテナがあれば先に消す。残っていても bind は失敗せず（SO_REUSEADDR）、点群が片方にしか届かないだけでログにも出ない
-docker stop velodyne-test && docker rm velodyne-test
+# 仮設に手で起動した 3 つ（コンテナとイメージ）を先に消す。残っていても bind は失敗せず（SO_REUSEADDR）、点群が片方にしか届かないだけでログにも出ない。
+# tf-velodyne は description の静的 TF と二重に出て点群の向きが揺れ、foxglove-bridge は description 側の bridge が 8765 で落ちる
+docker ps -a --format '{{.Names}}\t{{.Image}}' | grep -E 'velodyne-test|tf-velodyne|foxglove-bridge'    # 消す前にイメージ名を控える
+docker rm -f velodyne-test tf-velodyne foxglove-bridge 2>/dev/null || true
+docker rmi velodyne-test:jazzy                                                                           # 控えた他のイメージも同様に消す
 cd ~/ddt-can-bridge                       # .env の DDT_SERIAL_DEVICE は Velodyne だけの up でも必要（compose が全体を評価する）
-docker compose up -d velodyne-driver velodyne-transform
-docker compose exec velodyne-transform /ros_entrypoint.sh ros2 topic hz /velodyne_points    # 約 10 Hz
+docker compose --profile velodyne up -d velodyne-driver velodyne-transform
 ```
+
+Velodyne の 2 サービスは `profiles: [velodyne]` なので、`--profile velodyne` を付けない `docker compose up -d` では起動しません（`ddt` だけ送ったロボットで velodyne のイメージを pull しに行って止まるのを避けるため）。起動済みのものへの `exec`・`logs`・`ps`・`stop` は profile 無しで通りますが、**`down` は `--profile velodyne` を付けないと Velodyne のコンテナが残ります**。
+
+確認は、点群を reliable で受けて数えます（`ros2 topic hz` は best-effort 固定なので、#19 が直るまでドライバが正常でも低く出ます。`ros2 topic bw` も同様）。
+
+```sh
+docker compose exec velodyne-transform /ros_entrypoint.sh bash -c \
+  "timeout 20 ros2 topic echo --qos-reliability reliable --field header.stamp.sec /velodyne_points | grep -c '^[0-9]'"
+# 20 秒で 150 前後（10 Hz × 約 16 秒。コマンドの起動と発見に数秒かかるため 200 にはならない）
+```
+
 
 - ネットワーク前提（deploy はしない。`sudo` が要る一回きりの作業）: USB 有線 LAN `enx6c1ff772d439` に NetworkManager 接続 `velodyne`（固定 192.168.100.100/24）が済んでいること。`nmcli con add type ethernet ifname enx6c1ff772d439 con-name velodyne ipv4.method manual ipv4.addresses 192.168.100.100/24` 相当です。確認は `ip addr show enx6c1ff772d439` と `ping 192.168.100.200`。センサー（192.168.100.200、UDP 2368）の送信先が 192.168.100.100 かブロードキャストであることを HDL-32E の Web UI で確かめます。
 - センサーの IP を変えたら、`compose.yaml` の `velodyne-driver` の `device_ip` を直します（送信元が違うパケットは黙って捨てられます。`.env` の変数にはしていません）。

@@ -71,8 +71,10 @@ services:
   # HDL-32E on the USB LAN (sensor 192.168.100.200 -> host 192.168.100.100, UDP 2368). Separate image:
   # ros-jazzy-velodyne pulls PCL, and deploy.sh ships whole images.
   # VELODYNE_IMAGE_TAG: image tag, default latest.
+  # profiles: a plain `docker compose up -d` must not start these on a robot that only got the ddt image.
   velodyne-driver:
     <<: *ros-common
+    profiles: [velodyne]
     image: tsukuchalle-velodyne:${VELODYNE_IMAGE_TAG:-latest}
     restart: on-failure     # no motor-safety reason to stay down
     command:
@@ -89,6 +91,7 @@ services:
 
   velodyne-transform:
     <<: *ros-common
+    profiles: [velodyne]
     image: tsukuchalle-velodyne:${VELODYNE_IMAGE_TAG:-latest}
     restart: on-failure
     command:
