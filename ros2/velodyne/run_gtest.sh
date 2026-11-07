@@ -2,7 +2,10 @@
 # gtest of tsukuchalle_velodyne: the Release build, then the AddressSanitizer + UBSan build
 # (the benchmark limit is only asserted in the first one).
 set -euo pipefail
+# setup.bash reads unset variables (AMENT_TRACE_SETUP_FILES ...), so nounset is off while sourcing.
+set +u
 source /opt/ros/jazzy/setup.bash
+set -u
 cd /ws
 
 for variant in test asan; do
