@@ -120,10 +120,12 @@ pixi run ros2 param set /diff_drive_node max_wheel_rpm 50.0
 Mac からはビルド機へ `ssh <ビルド機>` で入って実行します。送りたいコミットをビルド機の clone で checkout し、作業ツリーを clean にしてから実行します（未 commit の変更があると中止します）。ビルド機からロボット PC へ鍵認証の ssh が通り、両方で `docker` が sudo なしで使えることが前提です。
 
 ```sh
-scripts/deploy.sh <ロボットのSSH先>
+scripts/deploy.sh <ロボットのSSH先> <ddt|velodyne|all>
 ```
 
-ビルド、`docker save | gzip | ssh ... docker load`、`latest` タグ付け、`~/ddt-can-bridge/` への `compose.yaml`・`config/`・`udev/` の送付までを行い、最後に起動コマンドを表示します。圧縮後のイメージはおよそ370MBで、LAN内の1回転送です（所要時間は実測して追記してください）。ビルド機とロボット PC の `uname -m` が違うと中止します。経路だけ試すときは、ビルド機自身（`nyanziba@localhost`）を送り先にします。
+送るイメージは必須で、`ddt`（`ddt-can-bridge-ros2`）、`velodyne`（`tsukuchalle-velodyne`）、`all`（両方）のどれかを指定します。省略や未知の値は usage を出して終了 2 です。Velodyne のイメージは PCL を含んで大きいので、`ddt_diff_drive` の修正だけなら `ddt` を使います。`compose.yaml`・`config/`・`udev/` はどれを選んでも送ります。
+
+ビルド、`docker save | gzip | ssh ... docker load`、`latest` タグ付け、`~/ddt-can-bridge/` への `compose.yaml`・`config/`・`udev/` の送付までを行い、最後に起動コマンドを表示します。`ddt` の圧縮後のイメージはおよそ370MBで、LAN内の1回転送です（`ddt`・`velodyne` それぞれの所要時間は実測して追記してください）。ビルド機とロボット PC の `uname -m` が違うと中止します。経路だけ試すときは、ssh で届くローカルの宛先（ビルド機自身など）を送り先にします。
 
 ### 起動（ロボット PC の `~/ddt-can-bridge/`）
 
@@ -156,7 +158,7 @@ docker compose stop                     # SIGTERMで停止処理（DISABLE）を
 docker compose run --rm teleop-keyboard
 ```
 
-- ボタン・軸の番号が違うパッドは、`docker compose exec joy /ws/ros2/docker-entrypoint.sh ros2 topic echo /joy` で確認して `config/teleop_twist_joy.yaml` を直し、`docker compose up -d --force-recreate teleop` で反映します。Start・Back・デッドマンの番号と中立を見る軸は `ros2/ddt_diff_drive/config/diff_drive.yaml`（`joy_*`）にもあるので、**両方を同じ番号に直してください**（片方だけ直すと、有効化の誤操作防止が黙って効かなくなります）。`diff_drive.yaml` は `drive` のイメージに焼き込まれているので、`teleop` の `--force-recreate` だけでは反映されません。ビルド機で `scripts/deploy.sh <ロボットのSSH先>` を実行してイメージを作り直して送り、ロボット PC で `docker compose up -d drive` します。反映後は `docker compose exec drive /ws/ros2/docker-entrypoint.sh ros2 param get /diff_drive_node joy_deadman_button` で値を確かめてください。初期値は 0.6 m/s、1.5 rad/s です（2026-11-06 に車輪を浮かせた試験と地面での走行で確認し、0.3 m/s、1.0 rad/s から引き上げ）。**初めて走らせるロボットや床では、スティックを浅く倒して低速で確かめてください。** A を離してから止まるまで、最高速から約 0.8 秒（約 0.3 m）かかります。
+- ボタン・軸の番号が違うパッドは、`docker compose exec joy /ws/ros2/docker-entrypoint.sh ros2 topic echo /joy` で確認して `config/teleop_twist_joy.yaml` を直し、`docker compose up -d --force-recreate teleop` で反映します。Start・Back・デッドマンの番号と中立を見る軸は `ros2/ddt_diff_drive/config/diff_drive.yaml`（`joy_*`）にもあるので、**両方を同じ番号に直してください**（片方だけ直すと、有効化の誤操作防止が黙って効かなくなります）。`diff_drive.yaml` は `drive` のイメージに焼き込まれているので、`teleop` の `--force-recreate` だけでは反映されません。ビルド機で `scripts/deploy.sh <ロボットのSSH先> ddt` を実行してイメージを作り直して送り、ロボット PC で `docker compose up -d drive` します。反映後は `docker compose exec drive /ws/ros2/docker-entrypoint.sh ros2 param get /diff_drive_node joy_deadman_button` で値を確かめてください。初期値は 0.6 m/s、1.5 rad/s です（2026-11-06 に車輪を浮かせた試験と地面での走行で確認し、0.3 m/s、1.0 rad/s から引き上げ）。**初めて走らせるロボットや床では、スティックを浅く倒して低速で確かめてください。** A を離してから止まるまで、最高速から約 0.8 秒（約 0.3 m）かかります。
 - `joy` は `/dev/input` を丸ごと読めるため、コンテナ内からホストのキーボード入力も読めます。専用のロボット PC を前提にしています。
 - USB を抜き差ししたり、基板がリセットしたりしても、`drive` は終了せず、ノードが基板を開き直します（`lost the board` は ERROR、`board reconnected` は WARN で、累計回数つきで毎回ログに出ます。回数の上限はありません）。有効だったときは、デッドマン（A）が離されスティックが中立になってから自動で再有効化します（`auto re-enabled after board reconnect`）。`auto_reenable_wait_s`（10 秒）以内に中立にならないと `auto re-enable abandoned` を出して無効のままになるので、Start で有効化してください。切断中に Back（または `data: false`）を押すと、再有効化は取り消されます。`joy_node` の `autorepeat_rate` を 0 にすると中立を判定できず、必ず諦めます。ファーム側の停止（`feedback lost` など）からは自動復帰しません。なお起動時に基板が無いと、`drive` は従来どおり終了します。
 - `DDT_SERIAL_DEVICE` は `/dev/serial/by-id/usb-...` か `/dev/ddt_board`（下の udev ルールの symlink）を指定してください。`/dev/ttyACM0` を固定で指定すると、再列挙で `ttyACM1` になったときに永久に再接続できません。`drive` は `/dev` を丸ごと見る（`devices:` は作成時に固定され、再列挙に追従できないため）ので、`joy` と同様に専用のロボット PC を前提にしています。`/dev` は再帰的に見えるため、ホストの `/dev/pts`・`/dev/ptmx` にもコンテナの root から届きます。
@@ -170,6 +172,38 @@ docker compose run --rm teleop-keyboard
 - 基板・受信機を替えたとき: `udevadm info -q property -n /dev/ttyACM0 | grep -E 'ID_VENDOR_ID|ID_MODEL_ID|ID_SERIAL_SHORT|ID_USB_INTERFACE_NUM'` で値を取り、`70-tsukuchalle.rules` を直して PR（CI の `udevadm verify` が通ること）、deploy、`install.sh` の順です。
 - ルール番号 70 は、`60-serial.rules`（`ID_SERIAL_SHORT`・`ID_USB_INTERFACE_NUM` を付ける）より後、ModemManager の `77-mm-*.rules` より前です。リネームするときはこの範囲を守ってください。
 - 2 台目のロボットは同じファイルに足さず `71-<名前>.rules` を別に作ります（シリアル番号は秘密ではないので直書きでよい）。
+
+### Velodyne HDL-32E（LiDAR）
+
+`velodyne-driver`（UDP パケットを受ける）と `velodyne-transform`（`/velodyne_points` にする）を、別イメージ `tsukuchalle-velodyne` で動かします。送るには `scripts/deploy.sh <ロボットのSSH先> velodyne`（または `all`）を実行します。`all` はイメージを 1 つずつ送るので、2 つ目のビルドが失敗すると、1 つ目は送られて `latest` になっていますが `compose.yaml`・`udev/` は送られません。
+
+```sh
+# 仮設に手で起動した 3 つ（コンテナとイメージ）を先に消す。残っていても bind は失敗せず（SO_REUSEADDR）、点群が片方にしか届かないだけでログにも出ない。
+# tf-velodyne は description の静的 TF と二重に出て点群の向きが揺れ、foxglove-bridge は description 側の bridge が 8765 で落ちる
+docker ps -a --format '{{.Names}}\t{{.Image}}' | grep -E 'velodyne-test|tf-velodyne|foxglove-bridge'    # 消す前にイメージ名を控える
+docker rm -f velodyne-test tf-velodyne foxglove-bridge 2>/dev/null || true
+docker rmi velodyne-test:jazzy                                                                           # 控えた他のイメージも同様に消す
+cd ~/ddt-can-bridge                       # .env の DDT_SERIAL_DEVICE は Velodyne だけの up でも必要（compose が全体を評価する）
+docker compose --profile velodyne up -d velodyne-driver velodyne-transform
+```
+
+Velodyne の 2 サービスは `profiles: [velodyne]` なので、`--profile velodyne` を付けない `docker compose up -d` では起動しません（`ddt` だけ送ったロボットで velodyne のイメージを pull しに行って止まるのを避けるため）。起動済みのものへの `exec`・`logs`・`ps`・`stop` は profile 無しで通りますが、**`down` は `--profile velodyne` を付けないと Velodyne のコンテナが残ります**。
+
+確認は、点群を reliable で受けて数えます（`ros2 topic hz` は best-effort 固定なので、#19 が直るまでドライバが正常でも低く出ます。`ros2 topic bw` も同様）。
+
+```sh
+docker compose exec velodyne-transform /ros_entrypoint.sh bash -c \
+  "timeout 20 ros2 topic echo --qos-reliability reliable --field header.stamp.sec /velodyne_points | grep -c '^[0-9]'"
+# 20 秒で 150 前後（10 Hz × 約 16 秒。コマンドの起動と発見に数秒かかるため 200 にはならない）
+```
+
+
+- ネットワーク前提（deploy はしない。`sudo` が要る一回きりの作業）: USB 有線 LAN `enx6c1ff772d439` に NetworkManager 接続 `velodyne`（固定 192.168.100.100/24）が済んでいること。`nmcli con add type ethernet ifname enx6c1ff772d439 con-name velodyne ipv4.method manual ipv4.addresses 192.168.100.100/24` 相当です。確認は `ip addr show enx6c1ff772d439` と `ping 192.168.100.200`。センサー（192.168.100.200、UDP 2368）の送信先が 192.168.100.100 かブロードキャストであることを HDL-32E の Web UI で確かめます。
+- センサーの IP を変えたら、`compose.yaml` の `velodyne-driver` の `device_ip` を直します（送信元が違うパケットは黙って捨てられます。`.env` の変数にはしていません）。
+- センサーが無い・LAN が抜けているときは、`velodyne_driver_node` が `Velodyne poll() timeout` を WARN で出し続けますが終了せず、復旧は自動です。`velodyne_transform_node` は入力が無いだけです。どちらも `restart: on-failure` です。
+- 出力は `/velodyne_points`（`sensor_msgs/PointCloud2`、10 Hz、organized で width 32（列 = ring）× height 2172、`is_dense: false`、1 フレーム約 1.5 MB）。範囲外・返りなしの点は x,y,z,intensity が NaN なので、使う側は非有限点を捨てます。副産物として `/velodyne_packets`（約 2.2 MB/s）と `/diagnostics` も出ます。
+- best-effort（SensorDataQoS）の購読は今は欠けます（[#19](https://github.com/RoboCupper-tsukuchallebu/tsukuchalle_drivers/issues/19)）。reliable で購読してください。
+- Foxglove の注意: 生の `/velodyne_points`（約 15 MB/s）を Wi-Fi 越しの Foxglove で購読すると foxglove_bridge の送信バッファが埋まり、他のトピックも落ちます。Foxglove では `tsukuchalle_pointcloud` の間引きトピック（別 Issue）を見てください。それまでは 3D パネルで `/velodyne_points` を購読せず、一覧に出る `/velodyne_packets` も購読しません。
 
 ### ROS 2 の通信範囲
 

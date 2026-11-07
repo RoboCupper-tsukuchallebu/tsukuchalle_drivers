@@ -67,3 +67,37 @@ services:
     stdin_open: true
     tty: true
     command: ros2 run teleop_twist_keyboard teleop_twist_keyboard
+
+  # HDL-32E on the USB LAN (sensor 192.168.100.200 -> host 192.168.100.100, UDP 2368). Separate image:
+  # ros-jazzy-velodyne pulls PCL, and deploy.sh ships whole images.
+  # VELODYNE_IMAGE_TAG: image tag, default latest.
+  # profiles: a plain `docker compose up -d` must not start these on a robot that only got the ddt image.
+  velodyne-driver:
+    <<: *ros-common
+    profiles: [velodyne]
+    image: tsukuchalle-velodyne:${VELODYNE_IMAGE_TAG:-latest}
+    restart: on-failure     # no motor-safety reason to stay down
+    command:
+      - /opt/ros/jazzy/lib/velodyne_driver/velodyne_driver_node
+      - --ros-args
+      - -p
+      - model:=32E
+      - -p
+      - rpm:=600.0
+      - -p
+      - frame_id:=velodyne
+      - -p
+      - device_ip:=192.168.100.200   # packets from any other source are dropped silently
+
+  velodyne-transform:
+    <<: *ros-common
+    profiles: [velodyne]
+    image: tsukuchalle-velodyne:${VELODYNE_IMAGE_TAG:-latest}
+    restart: on-failure
+    command:
+      - /opt/ros/jazzy/lib/velodyne_pointcloud/velodyne_transform_node
+      - --ros-args
+      - -p
+      - model:=32E
+      - -p
+      - calibration:=/opt/ros/jazzy/share/velodyne_pointcloud/params/32db.yaml
