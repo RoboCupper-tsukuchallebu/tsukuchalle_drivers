@@ -28,14 +28,115 @@ jobs:
 
   velodyne:
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 30
+    env:
+      # Compressed size limit of the minimal image (docker save | gzip). Stop-and-ask is at 120 MiB (not CI).
+      VELODYNE_IMAGE_LIMIT_MIB: "80"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - run: docker build -f ros2/velodyne/Dockerfile -t tsukuchalle-velodyne:ci .
-      # The base image's ENTRYPOINT (/ros_entrypoint.sh) sources ROS. The tests are mounted,
-      # not baked into the image.
-      - name: Feed synthetic HDL-32E packets through driver and transform
-        run: docker run --rm -v "$PWD/ros2/velodyne:/test:ro" tsukuchalle-velodyne:ci python3 -m unittest discover -s /test -v
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      # One cache scope per target: a later build with the same scope would overwrite the earlier one.
+      - name: Build runtime image
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: ros2/velodyne/Dockerfile
+          target: runtime
+          tags: tsukuchalle-velodyne:ci
+          load: true
+          cache-from: type=gha,scope=velodyne-runtime
+          cache-to: type=gha,mode=max,scope=velodyne-runtime
+      - name: Build test image
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: ros2/velodyne/Dockerfile
+          target: test
+          tags: tsukuchalle-velodyne:test
+          load: true
+          cache-from: type=gha,scope=velodyne-test
+          cache-to: type=gha,mode=max,scope=velodyne-test
+      - name: Build tools image
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: ros2/tools/Dockerfile
+          tags: tsukuchalle-ros-tools:ci
+          load: true
+          cache-from: type=gha,scope=ros-tools
+          cache-to: type=gha,mode=max,scope=ros-tools
+
+      - name: gtest and benchmark (Release, then AddressSanitizer)
+        run: docker run --rm tsukuchalle-velodyne:test
+
+      - name: Compressed size of the runtime image
+        run: |
+          size_bytes=$(docker save tsukuchalle-velodyne:ci | gzip | wc -c)
+          size_mib=$((size_bytes / 1024 / 1024))
+          echo "tsukuchalle-velodyne:ci compressed: ${size_mib} MiB (limit ${VELODYNE_IMAGE_LIMIT_MIB})"
+          test "$size_mib" -le "$VELODYNE_IMAGE_LIMIT_MIB"
+      - name: Runtime image has no build tools and every library resolves
+        run: docker run --rm -i --entrypoint bash tsukuchalle-velodyne:ci -s < ros2/velodyne/check_runtime_image.sh
+      # A runtime libc6 / libstdc++6 that differs from the builder (whose libraries were copied) breaks glibc.
+      - name: libc6 and libstdc++6 are the same in builder and runtime
+        run: |
+          query() { docker run --rm --entrypoint dpkg-query "$1" -W libc6 libstdc++6 libgcc-s1; }
+          query tsukuchalle-velodyne:test | tee builder-versions.txt
+          query tsukuchalle-velodyne:ci | tee runtime-versions.txt
+          diff builder-versions.txt runtime-versions.txt
+      - name: Commands of the compose services exist in the image
+        run: |
+          export DDT_SERIAL_DEVICE=/dev/null
+          config=$(docker compose -f ros2/compose.yaml --profile velodyne config --format json)
+          for service in velodyne-driver velodyne-transform; do
+            executable=$(jq -r --arg service "$service" '.services[$service].command[0]' <<< "$config")
+            echo "$service: $executable"
+            docker run --rm --entrypoint test tsukuchalle-velodyne:ci -x "$executable"
+          done
+
+      # The two nodes run in the runtime image with the commands of ros2/compose.yaml (device_ip is
+      # 127.0.0.1); the Python test runs in the tools image and sends the packets.
+      - name: Start driver and converter
+        run: |
+          export DDT_SERIAL_DEVICE=/dev/null
+          config=$(docker compose -f ros2/compose.yaml --profile velodyne config --format json)
+          readarray -t driver_command < <(jq -r '.services["velodyne-driver"].command
+            | map(if startswith("device_ip:=") then "device_ip:=127.0.0.1" else . end) | .[]' <<< "$config")
+          readarray -t transform_command < <(jq -r '.services["velodyne-transform"].command[]' <<< "$config")
+          docker run -d --name velodyne-driver --network host --ipc host --init \
+            tsukuchalle-velodyne:ci "${driver_command[@]}"
+          docker run -d --name velodyne-transform --network host --ipc host --init \
+            tsukuchalle-velodyne:ci "${transform_command[@]}"
+      - name: Feed synthetic HDL-32E packets through driver and converter
+        run: |
+          docker run --rm --network host --ipc host -v "$PWD/ros2/velodyne:/test:ro" \
+            tsukuchalle-ros-tools:ci python3 -m unittest discover -s /test -v
+      - name: Both nodes are still running
+        run: |
+          test "$(docker inspect -f '{{.State.Running}}' velodyne-driver)" = true
+          test "$(docker inspect -f '{{.State.Running}}' velodyne-transform)" = true
+      - name: Node logs
+        if: always()
+        run: |
+          for name in velodyne-driver velodyne-transform; do
+            echo "::group::$name"; docker logs "$name" 2>&1 | tail -n 100 || true; echo "::endgroup::"
+          done
+
+  ddt-image:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      # ros2/Dockerfile builds only ddt_diff_drive (--packages-select); nothing else covers that line.
+      - name: Build ddt-can-bridge-ros2
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: ros2/Dockerfile
+          tags: ddt-can-bridge-ros2:ci
+          cache-from: type=gha,scope=ddt-image
+          cache-to: type=gha,mode=max,scope=ddt-image
 
   udev:
     runs-on: ubuntu-24.04

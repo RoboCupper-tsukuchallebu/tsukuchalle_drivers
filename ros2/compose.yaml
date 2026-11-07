@@ -68,8 +68,9 @@ services:
     tty: true
     command: ros2 run teleop_twist_keyboard teleop_twist_keyboard
 
-  # HDL-32E on the USB LAN (sensor 192.168.100.200 -> host 192.168.100.100, UDP 2368). Separate image:
-  # ros-jazzy-velodyne pulls PCL, and deploy.sh ships whole images.
+  # HDL-32E on the USB LAN (sensor 192.168.100.200 -> host 192.168.100.100, UDP 2368). Separate, minimal
+  # image (ubuntu:noble + the two executables and their libraries, no shell wrapper, no ros2 CLI):
+  # deploy.sh ships whole images. For `ros2 topic hz` / bag use tsukuchalle-ros-tools (ros2/tools).
   # VELODYNE_IMAGE_TAG: image tag, default latest.
   # profiles: a plain `docker compose up -d` must not start these on a robot that only got the ddt image.
   velodyne-driver:
@@ -89,15 +90,15 @@ services:
       - -p
       - device_ip:=192.168.100.200   # packets from any other source are dropped silently
 
+  # velodyne_pointcloud_node is tsukuchalle_velodyne (ros2/velodyne/tsukuchalle_velodyne), not ros-drivers'
+  # velodyne_transform_node. To use another calibration, mount it and change `calibration:=`.
   velodyne-transform:
     <<: *ros-common
     profiles: [velodyne]
     image: tsukuchalle-velodyne:${VELODYNE_IMAGE_TAG:-latest}
     restart: on-failure
     command:
-      - /opt/ros/jazzy/lib/velodyne_pointcloud/velodyne_transform_node
+      - /ws/install/tsukuchalle_velodyne/lib/tsukuchalle_velodyne/velodyne_pointcloud_node
       - --ros-args
       - -p
-      - model:=32E
-      - -p
-      - calibration:=/opt/ros/jazzy/share/velodyne_pointcloud/params/32db.yaml
+      - calibration:=/ws/install/tsukuchalle_velodyne/share/tsukuchalle_velodyne/config/32db.yaml

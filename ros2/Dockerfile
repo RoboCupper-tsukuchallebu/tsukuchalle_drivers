@@ -23,7 +23,8 @@ RUN apt-get update \
 WORKDIR /ws
 COPY host host
 COPY ros2 ros2
-RUN . /opt/ros/jazzy/setup.sh && colcon build --base-paths ros2
+# ros2/velodyne/ holds a package of the Velodyne image; this image only builds ddt_diff_drive.
+RUN . /opt/ros/jazzy/setup.sh && colcon build --base-paths ros2 --packages-select ddt_diff_drive
 
 ENTRYPOINT ["/ws/ros2/docker-entrypoint.sh"]
 # Exec the node directly: `ros2 run` would sit between PID 1 and the node and swallow SIGTERM.

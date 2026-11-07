@@ -123,7 +123,7 @@ Mac からはビルド機へ `ssh <ビルド機>` で入って実行します。
 scripts/deploy.sh <ロボットのSSH先> <ddt|velodyne|all>
 ```
 
-送るイメージは必須で、`ddt`（`ddt-can-bridge-ros2`）、`velodyne`（`tsukuchalle-velodyne`）、`all`（両方）のどれかを指定します。省略や未知の値は usage を出して終了 2 です。Velodyne のイメージは PCL を含んで大きいので、`ddt_diff_drive` の修正だけなら `ddt` を使います。`compose.yaml`・`config/`・`udev/` はどれを選んでも送ります。
+送るイメージは必須で、`ddt`（`ddt-can-bridge-ros2`）、`velodyne`（`tsukuchalle-velodyne`）、`all`（両方）のどれかを指定します。省略や未知の値は usage を出して終了 2 です。Velodyne のイメージは別なので、`ddt_diff_drive` の修正だけなら `ddt` を使います。`compose.yaml`・`config/`・`udev/` はどれを選んでも送ります。
 
 ビルド、`docker save | gzip | ssh ... docker load`、`latest` タグ付け、`~/ddt-can-bridge/` への `compose.yaml`・`config/`・`udev/` の送付までを行い、最後に起動コマンドを表示します。`ddt` の圧縮後のイメージはおよそ370MBで、LAN内の1回転送です（`ddt`・`velodyne` それぞれの所要時間は実測して追記してください）。ビルド機とロボット PC の `uname -m` が違うと中止します。経路だけ試すときは、ssh で届くローカルの宛先（ビルド機自身など）を送り先にします。
 
@@ -175,7 +175,7 @@ docker compose run --rm teleop-keyboard
 
 ### Velodyne HDL-32E（LiDAR）
 
-`velodyne-driver`（UDP パケットを受ける）と `velodyne-transform`（`/velodyne_points` にする）を、別イメージ `tsukuchalle-velodyne` で動かします。送るには `scripts/deploy.sh <ロボットのSSH先> velodyne`（または `all`）を実行します。`all` はイメージを 1 つずつ送るので、2 つ目のビルドが失敗すると、1 つ目は送られて `latest` になっていますが `compose.yaml`・`udev/` は送られません。
+`velodyne-driver`（UDP パケットを受ける）と `velodyne-transform`（`/velodyne_points` にする。本リポの `ros2/velodyne/tsukuchalle_velodyne` の `velodyne_pointcloud_node`。PCL を使わない自作で、式は ros-drivers の `velodyne_transform_node` と同じ）を、別イメージ `tsukuchalle-velodyne` で動かします。このイメージは ubuntu:noble に 2 つの実行ファイルと必要な .so だけを置いた最小構成で、`ros2` CLI もシェルのラッパーも入っていません（`ros2 topic hz`・bag は `ros2/tools/Dockerfile` の `tsukuchalle-ros-tools` を `docker run` で使います）。送るには `scripts/deploy.sh <ロボットのSSH先> velodyne`（または `all`）を実行します。`all` はイメージを 1 つずつ送るので、2 つ目のビルドが失敗すると、1 つ目は送られて `latest` になっていますが `compose.yaml`・`udev/` は送られません。
 
 ```sh
 # 仮設に手で起動した 3 つ（コンテナとイメージ）を先に消す。残っていても bind は失敗せず（SO_REUSEADDR）、点群が片方にしか届かないだけでログにも出ない。
@@ -192,7 +192,9 @@ Velodyne の 2 サービスは `profiles: [velodyne]` なので、`--profile vel
 確認は、点群を reliable で受けて数えます（`ros2 topic hz` は best-effort 固定なので、#19 が直るまでドライバが正常でも低く出ます。`ros2 topic bw` も同様）。
 
 ```sh
-docker compose exec velodyne-transform /ros_entrypoint.sh bash -c \
+# tools イメージはロボット PC でビルドする（deploy.sh の `tools` 選択肢は別 PR）。リポ root で:
+docker build -f ros2/tools/Dockerfile -t tsukuchalle-ros-tools .
+docker run --rm --network host --ipc host tsukuchalle-ros-tools bash -c \
   "timeout 20 ros2 topic echo --qos-reliability reliable --field header.stamp.sec /velodyne_points | grep -c '^[0-9]'"
 # 20 秒で 150 前後（10 Hz × 約 16 秒。コマンドの起動と発見に数秒かかるため 200 にはならない）
 ```
@@ -200,7 +202,7 @@ docker compose exec velodyne-transform /ros_entrypoint.sh bash -c \
 
 - ネットワーク前提（deploy はしない。`sudo` が要る一回きりの作業）: USB 有線 LAN `enx6c1ff772d439` に NetworkManager 接続 `velodyne`（固定 192.168.100.100/24）が済んでいること。`nmcli con add type ethernet ifname enx6c1ff772d439 con-name velodyne ipv4.method manual ipv4.addresses 192.168.100.100/24` 相当です。確認は `ip addr show enx6c1ff772d439` と `ping 192.168.100.200`。センサー（192.168.100.200、UDP 2368）の送信先が 192.168.100.100 かブロードキャストであることを HDL-32E の Web UI で確かめます。
 - センサーの IP を変えたら、`compose.yaml` の `velodyne-driver` の `device_ip` を直します（送信元が違うパケットは黙って捨てられます。`.env` の変数にはしていません）。
-- センサーが無い・LAN が抜けているときは、`velodyne_driver_node` が `Velodyne poll() timeout` を WARN で出し続けますが終了せず、復旧は自動です。`velodyne_transform_node` は入力が無いだけです。どちらも `restart: on-failure` です。
+- センサーが無い・LAN が抜けているときは、`velodyne_driver_node` が `Velodyne poll() timeout` を WARN で出し続けますが終了せず、復旧は自動です。`velodyne_pointcloud_node` は入力が無いだけです。どちらも `restart: on-failure` です。
 - 出力は `/velodyne_points`（`sensor_msgs/PointCloud2`、10 Hz、organized で width 32（列 = ring）× height 2172、`is_dense: false`、1 フレーム約 1.5 MB）。範囲外・返りなしの点は x,y,z,intensity が NaN なので、使う側は非有限点を捨てます。副産物として `/velodyne_packets`（約 2.2 MB/s）と `/diagnostics` も出ます。
 - best-effort（SensorDataQoS）の購読は今は欠けます（[#19](https://github.com/RoboCupper-tsukuchallebu/tsukuchalle_drivers/issues/19)）。reliable で購読してください。
 - Foxglove の注意: 生の `/velodyne_points`（約 15 MB/s）を Wi-Fi 越しの Foxglove で購読すると foxglove_bridge の送信バッファが埋まり、他のトピックも落ちます。Foxglove では `tsukuchalle_pointcloud` の間引きトピック（別 Issue）を見てください。それまでは 3D パネルで `/velodyne_points` を購読せず、一覧に出る `/velodyne_packets` も購読しません。

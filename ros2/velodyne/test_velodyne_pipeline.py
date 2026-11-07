@@ -1,21 +1,19 @@
-"""Feeds synthetic HDL-32E packets to velodyne_driver_node and velodyne_transform_node.
+"""Feeds synthetic HDL-32E packets to velodyne_driver_node and velodyne_pointcloud_node.
 
-Run inside the tsukuchalle-velodyne image:
-    python3 -m unittest discover -s /test -v
-
-The two nodes are started with the same arguments as ros2/compose.yaml; only device_ip
-differs (127.0.0.1, so the sender filter is exercised too).
+Both nodes run in their own containers (tsukuchalle-velodyne image, started by CI with the
+`command` of ros2/compose.yaml; only device_ip differs: 127.0.0.1, so the sender filter is exercised
+too). This test runs in the tools image, which has rclpy and the velodyne_msgs Python types:
+    docker run --rm --network host --ipc host -v "$PWD/ros2/velodyne:/test:ro" \
+        tsukuchalle-ros-tools:ci python3 -m unittest discover -s /test -v
+Use the same ROS_DOMAIN_ID (-e) for all three containers.
 """
 
 import itertools
 import math
 import socket
 import struct
-import subprocess
-import tempfile
 import time
 import unittest
-from contextlib import contextmanager
 
 import rclpy
 from rclpy.qos import QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
@@ -25,20 +23,6 @@ from velodyne_msgs.msg import VelodyneScan
 
 import hdl32e_packets
 
-DRIVER_COMMAND = [
-    "/opt/ros/jazzy/lib/velodyne_driver/velodyne_driver_node",
-    "--ros-args",
-    "-p", "model:=32E",
-    "-p", "rpm:=600.0",
-    "-p", "frame_id:=velodyne",
-    "-p", "device_ip:=127.0.0.1",
-]
-TRANSFORM_COMMAND = [
-    "/opt/ros/jazzy/lib/velodyne_pointcloud/velodyne_transform_node",
-    "--ros-args",
-    "-p", "model:=32E",
-    "-p", "calibration:=/opt/ros/jazzy/share/velodyne_pointcloud/params/32db.yaml",
-]
 RELIABLE_QOS = QoSProfile(depth=10, reliability=ReliabilityPolicy.RELIABLE)
 SENSOR_ADDRESS = ("127.0.0.1", 2368)
 
@@ -47,7 +31,8 @@ ACCEPTED_FRAME_LOSS = 3
 PACKETS_PER_BATCH = 18
 BATCH_INTERVAL_SECONDS = 0.01
 DEADLINE_SECONDS = 30.0
-IDLE_SECONDS = 2.0
+IDLE_SECONDS = 5.0
+DRIVER_NODE_NAME = "velodyne_driver_node"
 
 EXPECTED_WIDTH = hdl32e_packets.CHANNELS_PER_BLOCK
 EXPECTED_HEIGHT = hdl32e_packets.FIRINGS_PER_REVOLUTION
@@ -68,42 +53,6 @@ def spin_until(node, condition, deadline_seconds):
     return True
 
 
-class LaunchedProcesses:
-    def __init__(self, commands):
-        self.log_file = tempfile.TemporaryFile()
-        self.processes = [
-            subprocess.Popen(command, stdout=self.log_file, stderr=subprocess.STDOUT)
-            for command in commands
-        ]
-
-    def all_alive(self):
-        return all(process.poll() is None for process in self.processes)
-
-    def log_text(self):
-        self.log_file.seek(0)
-        return self.log_file.read().decode(errors="replace")[-4000:]
-
-    def stop(self):
-        for process in self.processes:
-            process.terminate()
-        for process in self.processes:
-            try:
-                process.wait(timeout=10)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                process.wait()
-        self.log_file.close()
-
-
-@contextmanager
-def launched(commands):
-    processes = LaunchedProcesses(commands)
-    try:
-        yield processes
-    finally:
-        processes.stop()
-
-
 def decode_points(cloud):
     return list(struct.iter_unpack(POINT_FORMAT, bytes(cloud.data)))
 
@@ -116,6 +65,23 @@ class VelodynePipelineTest(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):
         rclpy.shutdown()
+
+    def node_names(self, node):
+        return [name for name, _namespace in node.get_node_names_and_namespaces()]
+
+    # unittest runs tests in alphabetical order, so this one runs before any packet is sent.
+    def test_a_driver_stays_alive_without_packets(self):
+        node = rclpy.create_node("velodyne_idle_test")
+        self.addCleanup(node.destroy_node)
+        discovered = spin_until(
+            node, lambda: DRIVER_NODE_NAME in self.node_names(node), DEADLINE_SECONDS
+        )
+        self.assertTrue(discovered, f"{DRIVER_NODE_NAME} was not discovered in time")
+
+        # Nothing is sent: the driver only logs `poll() timeout` and keeps running. CI also
+        # checks `docker inspect` of the driver container after the whole run.
+        spin_until(node, lambda: False, IDLE_SECONDS)
+        self.assertIn(DRIVER_NODE_NAME, self.node_names(node))
 
     def test_synthetic_revolutions_become_organized_point_clouds(self):
         node = rclpy.create_node("velodyne_pipeline_test")
@@ -138,39 +104,36 @@ class VelodynePipelineTest(unittest.TestCase):
             PointCloud2, "/velodyne_points", lambda _: None, qos_profile_sensor_data, raw=True
         )
 
-        with launched([DRIVER_COMMAND, TRANSFORM_COMMAND]) as processes:
-            ready = spin_until(
-                node,
-                lambda: processes.all_alive()
-                and subscription.get_publisher_count() >= 1
-                and best_effort_subscription.get_publisher_count() >= 1
-                and node.count_subscribers("/velodyne_packets") >= 1,
-                DEADLINE_SECONDS,
-            )
-            self.assertTrue(ready, f"nodes were not discovered in time:\n{processes.log_text()}")
-            node.destroy_subscription(best_effort_subscription)
+        # driver publishes /velodyne_packets, the converter subscribes to it and publishes /velodyne_points.
+        ready = spin_until(
+            node,
+            lambda: node.count_publishers("/velodyne_packets") >= 1
+            and node.count_subscribers("/velodyne_packets") >= 1
+            and subscription.get_publisher_count() >= 1
+            and best_effort_subscription.get_publisher_count() >= 1,
+            DEADLINE_SECONDS,
+        )
+        self.assertTrue(ready, "driver and converter were not discovered in time")
+        node.destroy_subscription(best_effort_subscription)
 
-            sender = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            self.addCleanup(sender.close)
-            batches = itertools.batched(
-                hdl32e_packets.build_revolutions(REVOLUTION_COUNT), PACKETS_PER_BATCH
-            )
-            next_send_time = time.monotonic()
-            for batch in batches:
-                for packet in batch:
-                    sender.sendto(packet, SENSOR_ADDRESS)
-                next_send_time += BATCH_INTERVAL_SECONDS
-                spin_until(node, lambda: False, max(next_send_time - time.monotonic(), 0))
+        sender = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.addCleanup(sender.close)
+        batches = itertools.batched(
+            hdl32e_packets.build_revolutions(REVOLUTION_COUNT), PACKETS_PER_BATCH
+        )
+        next_send_time = time.monotonic()
+        for batch in batches:
+            for packet in batch:
+                sender.sendto(packet, SENSOR_ADDRESS)
+            next_send_time += BATCH_INTERVAL_SECONDS
+            spin_until(node, lambda: False, max(next_send_time - time.monotonic(), 0))
 
-            # Stop at the full count or the deadline; frames can arrive late on a slow runner.
-            spin_until(node, lambda: len(serialized_clouds) >= REVOLUTION_COUNT, DEADLINE_SECONDS)
-            driver_log = processes.log_text()
+        # Stop at the full count or the deadline; frames can arrive late on a slow runner.
+        spin_until(node, lambda: len(serialized_clouds) >= REVOLUTION_COUNT, DEADLINE_SECONDS)
 
         received_clouds = [deserialize_message(raw, PointCloud2) for raw in serialized_clouds]
         minimum_frames = REVOLUTION_COUNT - ACCEPTED_FRAME_LOSS
-        self.assertGreaterEqual(
-            len(serialized_clouds), minimum_frames, f"too few frames:\n{driver_log}"
-        )
+        self.assertGreaterEqual(len(serialized_clouds), minimum_frames, "too few frames")
         for cloud in received_clouds:
             self.assert_cloud_layout(cloud)
         self.assert_cloud_points(received_clouds[0])
@@ -197,12 +160,6 @@ class VelodynePipelineTest(unittest.TestCase):
         for index, point in enumerate(points):
             self.assertEqual(point[4], index % EXPECTED_WIDTH)
         self.assertEqual({point[4] for point in points}, set(range(EXPECTED_WIDTH)))
-
-    def test_driver_stays_alive_without_packets(self):
-        with launched([DRIVER_COMMAND]) as processes:
-            with self.assertRaises(subprocess.TimeoutExpired):
-                processes.processes[0].wait(timeout=IDLE_SECONDS)
-            self.assertTrue(processes.all_alive(), processes.log_text())
 
 
 if __name__ == "__main__":
