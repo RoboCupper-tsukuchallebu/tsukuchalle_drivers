@@ -1,0 +1,8 @@
+host_monitor_node:
+  ros__parameters:
+    # Read-only view of the host's sysfs (compose mounts it here).
+    power_supply_root: /sys/class/power_supply
+
+    # Discharging only: at or below these percentages the status is WARN / ERROR.
+    battery_warn_percent: 20.0
+    battery_error_percent: 10.0

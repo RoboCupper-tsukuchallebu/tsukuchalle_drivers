@@ -1,0 +1,15 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>tsukuchalle_host_monitor</name>
+  <version>0.1.0</version>
+  <description>Publishes the state of the robot PC (battery first) to /diagnostics.</description>
+  <maintainer email="katsu2yukkuri@gmail.com">Nyanziba</maintainer>
+  <license>UNLICENSED</license>
+
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>diagnostic_msgs</exec_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

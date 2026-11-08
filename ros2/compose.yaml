@@ -82,6 +82,20 @@ services:
     tty: true
     command: ros2 run teleop_twist_keyboard teleop_twist_keyboard
 
+  # Battery of the robot PC to /diagnostics ("host: battery", 1 Hz). Read-only: it reads sysfs and publishes
+  # /diagnostics, and touches no drive topic. Same image as drive (ddt-can-bridge-ros2).
+  host_monitor:
+    <<: *ros-common
+    # The container's own /sys already shows the host's power supplies; the explicit read-only mount keeps
+    # that true even if /sys is hidden. Its symlinks resolve through the container's /sys/devices.
+    volumes:
+      - /sys/class/power_supply:/sys/class/power_supply:ro
+    command:
+      - /ws/install/tsukuchalle_host_monitor/lib/tsukuchalle_host_monitor/host_monitor_node
+      - --ros-args
+      - --params-file
+      - /ws/install/tsukuchalle_host_monitor/share/tsukuchalle_host_monitor/config/host_monitor.yaml
+
   # HDL-32E on the USB LAN (sensor 192.168.100.200 -> host 192.168.100.100, UDP 2368). Separate, minimal
   # image (ubuntu:noble + the two executables and their libraries; its only ENTRYPOINT is /dds_check.sh, no ros2 CLI):
   # deploy.sh ships whole images. For `ros2 topic hz` / bag use tsukuchalle-ros-tools (ros2/tools).
