@@ -16,6 +16,6 @@ env = { ROS_DOMAIN_ID = "42" }
 
 [tasks]
 build = "colcon build --base-paths ros2"
-test = { cmd = "python -m unittest discover -s ros2/ddt_diff_drive/test -v", depends-on = ["build"] }
+test = { cmd = "python -m unittest discover -s ros2/ddt_diff_drive/test -v && python -m unittest discover -s ros2/tsukuchalle_host_monitor/test -v", depends-on = ["build"] }
 drive = "ros2 run ddt_diff_drive diff_drive_node --ros-args --params-file ros2/ddt_diff_drive/config/diff_drive.yaml"
 teleop = "ros2 run teleop_twist_keyboard teleop_twist_keyboard"

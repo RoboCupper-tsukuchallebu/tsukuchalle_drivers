@@ -179,6 +179,18 @@ jobs:
         run: |
           ros2/dds/check_image.sh ddt-can-bridge-ros2:ci
           ros2/dds/test_dds_check.sh ddt-can-bridge-ros2:ci
+      - name: tsukuchalle_host_monitor tests in the image
+        run: |
+          docker run --rm --network host --ipc host --init --user 1000:1000 -e TSUKUCHALLE_UID=1000 \
+            ddt-can-bridge-ros2:ci python3 -m unittest discover -s /ws/ros2/tsukuchalle_host_monitor/test -v
+      - name: host_monitor of compose reads sysfs read-only and its command exists in the image
+        run: |
+          export DDT_SERIAL_DEVICE=/dev/null
+          config=$(docker compose -f ros2/compose.yaml config --format json)
+          jq -e '.services.host_monitor | .user == "1000:1000" and .ipc == "host" and .network_mode == "host"
+            and ([.volumes[] | select(.target == "/sys/class/power_supply" and .read_only == true)] | length == 1)' <<< "$config"
+          executable=$(jq -r '.services.host_monitor.command[0]' <<< "$config")
+          docker run --rm --entrypoint test ddt-can-bridge-ros2:ci -x "$executable"
       # No `port` and no board: the node gets as far as its own "expected one board" error, which comes after
       # rcl made its log directory. 4242 has no passwd entry, so there is no HOME: this fails if ROS_LOG_DIR /
       # ROS_HOME are not set in the image (1000 is the real case; the base image's `ubuntu` user hides it).

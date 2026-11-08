@@ -246,6 +246,45 @@ docker run --rm --network host --ipc host --user "$(id -u):$(id -g)" -e TSUKUCHA
 - best-effort（SensorDataQoS）でも欠けません（[#19](https://github.com/RoboCupper-tsukuchallebu/tsukuchalle_drivers/issues/19)。原因は下の「ROS 2 の通信範囲」）。CI は best-effort 20/20 を確かめています。
 - Foxglove の注意: 生の `/velodyne_points`（約 15 MB/s）を Wi-Fi 越しの Foxglove で購読すると foxglove_bridge の送信バッファが埋まり、他のトピックも落ちます。Foxglove では `tsukuchalle_pointcloud` の間引きトピック（別 Issue）を見てください。それまでは 3D パネルで `/velodyne_points` を購読せず、一覧に出る `/velodyne_packets` も購読しません。
 
+### ロボット PC の電池（`host_monitor`）
+
+ロボット PC の電池の状態を `/diagnostics` に出します。`ddt` のイメージ（`ddt-can-bridge-ros2`）に入っているパッケージ `tsukuchalle_host_monitor`（`ros2/tsukuchalle_host_monitor`）で、`drive` と同じイメージを使うので追加の deploy は要りません（`scripts/deploy.sh <ロボットのSSH先> ddt`）。`/sys/class/power_supply` を読むだけで、モーター・駆動系の topic は購読も発行もしません。
+
+```sh
+docker compose up -d host_monitor
+docker compose exec host_monitor /ws/ros2/docker-entrypoint.sh ros2 topic echo --once --qos-reliability reliable /diagnostics
+```
+
+| 項目 | 内容 |
+|---|---|
+| サービス | `host_monitor`（`/sys/class/power_supply` を read-only でマウント。`user`・`ipc: host`・`network_mode: host` は他のサービスと同じ） |
+| 出すもの | `/diagnostics`（`diagnostic_msgs/DiagnosticArray`、1 Hz）。DiagnosticStatus は 1 つで `name` は `host: battery`、`hardware_id` は電池名（`BAT0` など） |
+| 購読するもの | なし |
+
+`values` のキー（読めない値は `unknown`）:
+
+| キー | 内容 |
+|---|---|
+| `capacity_percent` | 残量 %（`capacity`） |
+| `status` | `Charging` / `Discharging` / `Full` / `Not charging`（`status` のまま） |
+| `ac` | `online` / `offline`（`type` が `Mains` か名前が `AC` で始まる電源の `online`。どれかが 1 なら `online`） |
+| `energy_wh` / `energy_full_wh` / `energy_full_design_wh` | 今・満充電・設計のエネルギー Wh（`energy_now` / `energy_full` / `energy_full_design`）。無ければ `charge_*`（µAh）に `voltage_now` を掛けた概算 |
+| `power_w` | 消費電力 W（`power_now`）。無ければ `current_now` × `voltage_now`。符号は捨てる |
+| `time_remaining_min` | 残り時間の見込み（分）。放電中だけ、`energy_wh` / `power_w`。今の消費電力が続く前提で、負荷が変わると大きく動く |
+| `health_percent` | 劣化の度合い。`energy_full_wh` / `energy_full_design_wh` の % |
+| `cycle_count` | 充放電回数（`cycle_count`） |
+| `voltage_v` | 電圧 V（`voltage_now`） |
+
+level: 放電中（`status` が `Discharging`）で残量が `battery_error_percent` 以下なら ERROR、`battery_warn_percent` 以下なら WARN、それ以外は OK（充電中・満充電では残量が低くても OK）。電池が見つからなければ STALE（メッセージ `no battery found`）。周辺機器の電池（`scope` が `Device`）と `present` が 0 の電池は無視し、名前順で最初の電池を使います。
+
+| パラメータ | 初期値 | 内容 |
+|---|---|---|
+| `power_supply_root` | `/sys/class/power_supply` | 読む場所。試験で偽装した sysfs に差し替える |
+| `battery_warn_percent` | 20.0 | 放電中、この残量以下で WARN |
+| `battery_error_percent` | 10.0 | 放電中、この残量以下で ERROR（`0 <= error <= warn <= 100`。外れると起動しない） |
+
+値を変えるときは `ros2/tsukuchalle_host_monitor/config/host_monitor.yaml` を直し、`scripts/deploy.sh <ロボットのSSH先> ddt` で配ります（イメージに焼き込まれます）。試験は `make` では走りません。`pixi run test`、またはイメージの中で `docker run --rm ddt-can-bridge-ros2:<タグ> python3 -m unittest discover -s /ws/ros2/tsukuchalle_host_monitor/test` を実行します（CI の `ddt-image` も同じ）。
+
 ### ROS 2 の通信範囲と実行 uid
 
 #### 設定
