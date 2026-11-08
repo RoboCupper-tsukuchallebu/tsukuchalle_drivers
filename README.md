@@ -138,11 +138,6 @@ docker compose up -d drive joy teleop                # この時点ではモー�
 
 **deploy（`scripts/deploy.sh` とその後の `up`）の前に `.env` を書いてください。** 既定の uid は 1000 ですが、全リポ（datagnss・description/foxglove・pointcloud・nav-stack）を uid 1000 に切り替えるまでは、X13 でも `TSUKUCHALLE_UID=0` と `TSUKUCHALLE_GID=0` を書きます（**省略不可**。省略すると本リポだけ uid 1000 になり、root のままの他リポのコンテナとの間で点群などが黙って 0 受信になります）。切り替えの手順は下の「ROS 2 の通信範囲と実行 uid」です。
 
-```sh
-# 切り替え前の X13（他リポがまだ root）
-printf 'DDT_SERIAL_DEVICE=/dev/serial/by-id/usb-...\nTSUKUCHALLE_UID=0\nTSUKUCHALLE_GID=0\n' > ~/ddt-can-bridge/.env
-```
-
 `.env` の変数（`DDT_SERIAL_DEVICE` と、切り替えまでの `TSUKUCHALLE_UID`/`TSUKUCHALLE_GID` 以外は省略可。既定は X13 の値）:
 
 | 変数 | 既定 | 内容 |
