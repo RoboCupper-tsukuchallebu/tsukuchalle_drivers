@@ -131,15 +131,23 @@ scripts/deploy.sh <ロボットのSSH先> <ddt|velodyne|all>
 
 ```sh
 # 初回だけ。.env は compose が自動で読むので、別のシェルや再ログインの後でも ps・down・logs・exec が通る
-echo 'DDT_SERIAL_DEVICE=/dev/serial/by-id/usb-...' > ~/ddt-can-bridge/.env
+# TSUKUCHALLE_UID/GID=0 は他リポが uid 1000 になるまでの暫定（省略不可。下の説明）
+printf 'DDT_SERIAL_DEVICE=/dev/serial/by-id/usb-...\nTSUKUCHALLE_UID=0\nTSUKUCHALLE_GID=0\n' > ~/ddt-can-bridge/.env
 docker compose up -d drive joy teleop                # この時点ではモーターは無効
 ```
 
-`.env` の変数（`DDT_SERIAL_DEVICE` 以外は省略可。既定は X13 の値）:
+**deploy（`scripts/deploy.sh` とその後の `up`）の前に `.env` を書いてください。** 既定の uid は 1000 ですが、全リポ（datagnss・description/foxglove・pointcloud・nav-stack）を uid 1000 に切り替えるまでは、X13 でも `TSUKUCHALLE_UID=0` と `TSUKUCHALLE_GID=0` を書きます（**省略不可**。省略すると本リポだけ uid 1000 になり、root のままの他リポのコンテナとの間で点群などが黙って 0 受信になります）。切り替えの手順は下の「ROS 2 の通信範囲と実行 uid」です。
+
+```sh
+# 切り替え前の X13（他リポがまだ root）
+printf 'DDT_SERIAL_DEVICE=/dev/serial/by-id/usb-...\nTSUKUCHALLE_UID=0\nTSUKUCHALLE_GID=0\n' > ~/ddt-can-bridge/.env
+```
+
+`.env` の変数（`DDT_SERIAL_DEVICE` と、切り替えまでの `TSUKUCHALLE_UID`/`TSUKUCHALLE_GID` 以外は省略可。既定は X13 の値）:
 
 | 変数 | 既定 | 内容 |
 |---|---|---|
-| `TSUKUCHALLE_UID` / `TSUKUCHALLE_GID` | 1000 / 1000 | 全サービスの実行 uid / gid。ロボット PC のログインユーザー（`id -u`、`id -g`）に合わせる |
+| `TSUKUCHALLE_UID` / `TSUKUCHALLE_GID` | 1000 / 1000 | 全サービスの実行 uid / gid。切り替え後はロボット PC のログインユーザー（`id -u`、`id -g`）に合わせる。**切り替えまでは 0 / 0 を書く（省略不可）** |
 | `TSUKUCHALLE_DIALOUT_GID` | 20 | `drive` が `/dev/ttyACM*`（`root:dialout 0660`）を開くための数値 GID（`getent group dialout`） |
 | `TSUKUCHALLE_INPUT_GID` | 995 | `joy` が `/dev/input/event*`（`root:input 0660`）を開くための数値 GID（`getent group input`。X13 は 995 で、PC ごとに違う） |
 | `TSUKUCHALLE_DDS_MODE` | 空 | `lan` にすると Mac などから見られる（下の「ROS 2 の通信範囲」） |
@@ -258,7 +266,7 @@ ls -la /dev/shm | grep -c fastrtps            # 0
 # 3. 各 .env の TSUKUCHALLE_UID=0 / TSUKUCHALLE_GID=0 を消す（または 1000 にする）
 # 4. 全部起動し、所有者が全部ログインユーザーであることを確かめる
 docker compose up -d drive joy teleop && docker compose --profile velodyne up -d velodyne-driver velodyne-transform
-ls -la /dev/shm | grep fastrtps               # 所有者は全部 nyanziba（1000）
+ls -la /dev/shm | grep fastrtps               # 所有者は全部ログインユーザー（1000）
 docker compose exec drive id -u               # 1000
 ```
 
@@ -266,7 +274,7 @@ docker compose exec drive id -u               # 1000
 
 - SHM のセグメントは**プロセス（Context）ごと**に 1 つで、確保時に `memset` するので RAM を実際に使います。1 プロセスあたり約 17,564,192 B（16 MiB ＋ 約 0.75 MiB）です。`ros2` の daemon や CLI を 1 回起動するたびにも 1 つ増えます。
 - X13 の常時プロセス ≈ 15 で約 250 MiB（`/dev/shm` は 3.5 GiB の tmpfs）。`df /dev/shm` と `ls -la /dev/shm` で合計を照合します。コンテナを kill すると `fastrtps_*` が残ることがあるので、増え続けるときは全部止めて `sudo rm -f /dev/shm/fastrtps_*` です。
-- `--ipc host` の無いコンテナ（1 コンテナに participant が 4 つ以上）は `--shm-size=256m` 以上が必要です。Docker の既定 64 MiB や 32m では participant を作れず起動時に異常終了します（`Failed to create segment`）。
+- `--ipc host` の無いコンテナ（1 コンテナに participant が 4 つ以上）は `--shm-size=256m` 以上を必須にします。`/dev/shm` が小さい（Docker の既定 64 MiB や 32m）と SHM の作成に失敗して ERROR（`Failed to create segment` / `Unable to Register SHM Transport`）を出し、**SHM なしで続行します**。プロセスは落ちず、点群は UDP の `lo` に回って黙って劣化します（欠けが戻る）。ログに上の ERROR が出たら `--shm-size` を疑ってください。
 
 #### Mac から見る（`TSUKUCHALLE_DDS_MODE=lan`）
 
