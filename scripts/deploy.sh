@@ -56,6 +56,9 @@ deployed ${deployedImages[*]} (also latest) and compose files, udev rules to ${r
 On the robot PC:
   sudo bash ~/ddt-can-bridge/udev/install.sh   # udev rules (first time, or after changing them)
   cd ~/ddt-can-bridge
+.env (see README): DDT_SERIAL_DEVICE, and when this PC differs from X13 (uid/gid 1000, dialout 20, input 995):
+  TSUKUCHALLE_UID TSUKUCHALLE_GID TSUKUCHALLE_DIALOUT_GID TSUKUCHALLE_INPUT_GID  (id -u, id -g, getent group dialout input)
+  Every ROS container on the PC must run as one uid; TSUKUCHALLE_UID=0 TSUKUCHALLE_GID=0 until the other repositories are updated.
 MESSAGE
 if [[ " ${imageSelections[*]} " == *" ddt "* ]]; then
     cat <<'MESSAGE'

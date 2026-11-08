@@ -135,6 +135,15 @@ echo 'DDT_SERIAL_DEVICE=/dev/serial/by-id/usb-...' > ~/ddt-can-bridge/.env
 docker compose up -d drive joy teleop                # この時点ではモーターは無効
 ```
 
+`.env` の変数（`DDT_SERIAL_DEVICE` 以外は省略可。既定は X13 の値）:
+
+| 変数 | 既定 | 内容 |
+|---|---|---|
+| `TSUKUCHALLE_UID` / `TSUKUCHALLE_GID` | 1000 / 1000 | 全サービスの実行 uid / gid。ロボット PC のログインユーザー（`id -u`、`id -g`）に合わせる |
+| `TSUKUCHALLE_DIALOUT_GID` | 20 | `drive` が `/dev/ttyACM*`（`root:dialout 0660`）を開くための数値 GID（`getent group dialout`） |
+| `TSUKUCHALLE_INPUT_GID` | 995 | `joy` が `/dev/input/event*`（`root:input 0660`）を開くための数値 GID（`getent group input`。X13 は 995 で、PC ごとに違う） |
+| `TSUKUCHALLE_DDS_MODE` | 空 | `lan` にすると Mac などから見られる（下の「ROS 2 の通信範囲」） |
+
 `DDT_SERIAL_DEVICE` は必須で、未設定だと **`down`・`ps`・`logs` を含む compose のすべてのコマンド**が `required variable DDT_SERIAL_DEVICE is missing` で止まります（`.env` か `export` のどちらかで設定してください）。`scripts/deploy.sh` が送るのは `compose.yaml`・`config/`・`udev/` だけで、`.env` は上書きも削除もしません。`.env` はリポジトリには置きません（`.gitignore` 済み）。
 
 動かすには車輪を浮かせて、パッドで有効化します（コンテナの起動では有効化しません）。**Start で有効化、Back で無効化**します（ボタン番号は下の `/joy` で確認）。デッドマン（A）を離し、左スティックを中立に戻してから Start を押してください。そうでないと `enable ignored: ...` の警告が出て有効化しません。
@@ -175,7 +184,7 @@ docker compose run --rm teleop-keyboard
 
 ### Velodyne HDL-32E（LiDAR）
 
-`velodyne-driver`（UDP パケットを受ける）と `velodyne-transform`（`/velodyne_points` にする。本リポの `ros2/velodyne/tsukuchalle_velodyne` の `velodyne_pointcloud_node`。PCL を使わない自作で、式は ros-drivers の `velodyne_transform_node` と同じ）を、別イメージ `tsukuchalle-velodyne` で動かします。このイメージは ubuntu:noble に 2 つの実行ファイルと必要な .so だけを置いた最小構成で、`ros2` CLI もシェルのラッパーも入っていません（`ros2 topic hz`・bag は `ros2/tools/Dockerfile` の `tsukuchalle-ros-tools` を `docker run` で使います）。送るには `scripts/deploy.sh <ロボットのSSH先> velodyne`（または `all`）を実行します。`all` はイメージを 1 つずつ送るので、2 つ目のビルドが失敗すると、1 つ目は送られて `latest` になっていますが `compose.yaml`・`udev/` は送られません。
+`velodyne-driver`（UDP パケットを受ける）と `velodyne-transform`（`/velodyne_points` にする。本リポの `ros2/velodyne/tsukuchalle_velodyne` の `velodyne_pointcloud_node`。PCL を使わない自作で、式は ros-drivers の `velodyne_transform_node` と同じ）を、別イメージ `tsukuchalle-velodyne` で動かします。このイメージは ubuntu:noble に 2 つの実行ファイルと必要な .so だけを置いた最小構成で、`ros2` CLI は入っていません。ENTRYPOINT は uid と DDS の設定を確かめるだけの `/dds_check.sh`（POSIX `sh` 15 行ほど。確かめたら `exec` で消えます）だけです（`ros2 topic hz`・bag は `ros2/tools/Dockerfile` の `tsukuchalle-ros-tools` を `docker run` で使います）。送るには `scripts/deploy.sh <ロボットのSSH先> velodyne`（または `all`）を実行します。`all` はイメージを 1 つずつ送るので、2 つ目のビルドが失敗すると、1 つ目は送られて `latest` になっていますが `compose.yaml`・`udev/` は送られません。
 
 ```sh
 # 仮設に手で起動した 3 つ（コンテナとイメージ）を先に消す。残っていても bind は失敗せず（SO_REUSEADDR）、点群が片方にしか届かないだけでログにも出ない。
@@ -189,29 +198,79 @@ docker compose --profile velodyne up -d velodyne-driver velodyne-transform
 
 Velodyne の 2 サービスは `profiles: [velodyne]` なので、`--profile velodyne` を付けない `docker compose up -d` では起動しません（`ddt` だけ送ったロボットで velodyne のイメージを pull しに行って止まるのを避けるため）。起動済みのものへの `exec`・`logs`・`ps`・`stop` は profile 無しで通りますが、**`down` は `--profile velodyne` を付けないと Velodyne のコンテナが残ります**。
 
-確認は、点群を reliable で受けて数えます（`ros2 topic hz` は best-effort 固定なので、#19 が直るまでドライバが正常でも低く出ます。`ros2 topic bw` も同様）。
+確認は `ros2 topic hz`（jazzy では best-effort 固定）で足ります。tools イメージはロボット PC でビルドし、**ホストのログインユーザーの uid で**起動します（`--user` を忘れると root になり、`/dds_check.sh` が止めます。`-e TSUKUCHALLE_UID` を付けないと uid の検査は飛ぶので、例には必ず付けます）。
 
 ```sh
-# tools イメージはロボット PC でビルドする（deploy.sh の `tools` 選択肢は別 PR）。リポ root で:
+# deploy.sh の `tools` 選択肢は別 PR。リポ root で:
 docker build -f ros2/tools/Dockerfile -t tsukuchalle-ros-tools .
-docker run --rm --network host --ipc host tsukuchalle-ros-tools bash -c \
-  "timeout 20 ros2 topic echo --qos-reliability reliable --field header.stamp.sec /velodyne_points | grep -c '^[0-9]'"
-# 20 秒で 150 前後（10 Hz × 約 16 秒。コマンドの起動と発見に数秒かかるため 200 にはならない）
+docker run --rm --network host --ipc host --user "$(id -u):$(id -g)" -e TSUKUCHALLE_UID="$(id -u)" \
+  tsukuchalle-ros-tools ros2 topic hz /velodyne_points                 # 10 Hz 前後（欠けると 10 を大きく下回る）
+docker run --rm --network host --ipc host --user "$(id -u):$(id -g)" -e TSUKUCHALLE_UID="$(id -u)" \
+  tsukuchalle-ros-tools bash -c \
+  "timeout 10 ros2 topic echo --qos-reliability reliable --qos-durability volatile --field header.frame_id /velodyne_points | grep -c velodyne"   # reliable は 10 秒で 100 前後
 ```
-
 
 - ネットワーク前提（deploy はしない。`sudo` が要る一回きりの作業）: USB 有線 LAN `enx6c1ff772d439` に NetworkManager 接続 `velodyne`（固定 192.168.100.100/24）が済んでいること。`nmcli con add type ethernet ifname enx6c1ff772d439 con-name velodyne ipv4.method manual ipv4.addresses 192.168.100.100/24` 相当です。確認は `ip addr show enx6c1ff772d439` と `ping 192.168.100.200`。センサー（192.168.100.200、UDP 2368）の送信先が 192.168.100.100 かブロードキャストであることを HDL-32E の Web UI で確かめます。
 - センサーの IP を変えたら、`compose.yaml` の `velodyne-driver` の `device_ip` を直します（送信元が違うパケットは黙って捨てられます。`.env` の変数にはしていません）。
 - センサーが無い・LAN が抜けているときは、`velodyne_driver_node` が `Velodyne poll() timeout` を WARN で出し続けますが終了せず、復旧は自動です。`velodyne_pointcloud_node` は入力が無いだけです。どちらも `restart: on-failure` です。
 - 出力は `/velodyne_points`（`sensor_msgs/PointCloud2`、10 Hz、organized で width 32（列 = ring）× height 2172、`is_dense: false`、1 フレーム約 1.5 MB）。範囲外・返りなしの点は x,y,z,intensity が NaN なので、使う側は非有限点を捨てます。副産物として `/velodyne_packets`（約 2.2 MB/s）と `/diagnostics` も出ます。
-- best-effort（SensorDataQoS）の購読は今は欠けます（[#19](https://github.com/RoboCupper-tsukuchallebu/tsukuchalle_drivers/issues/19)）。reliable で購読してください。
+- best-effort（SensorDataQoS）でも欠けません（[#19](https://github.com/RoboCupper-tsukuchallebu/tsukuchalle_drivers/issues/19)。原因は下の「ROS 2 の通信範囲」）。CI は best-effort 20/20 を確かめています。
 - Foxglove の注意: 生の `/velodyne_points`（約 15 MB/s）を Wi-Fi 越しの Foxglove で購読すると foxglove_bridge の送信バッファが埋まり、他のトピックも落ちます。Foxglove では `tsukuchalle_pointcloud` の間引きトピック（別 Issue）を見てください。それまでは 3D パネルで `/velodyne_points` を購読せず、一覧に出る `/velodyne_packets` も購読しません。
 
-### ROS 2 の通信範囲
+### ROS 2 の通信範囲と実行 uid
 
-- 既定は `ROS_DOMAIN_ID=42`、`ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST` です。同じ LAN の別 PC のトピックは見えず、`/cmd_vel` も受けません。別 PC（Mac の pixi など）から操作するときだけ、起動前に `export ROS_AUTOMATIC_DISCOVERY_RANGE=SUBNET` を付けて `docker compose up -d` し直します。
-- LOCALHOST では Fast DDS が同じホスト内の通信に共有メモリを使います（`FASTDDS_BUILTIN_TRANSPORTS=UDPv4` は効きません）。そのため compose は全サービスに `ipc: host` を付けています。compose を使わず `docker run` で同じドメインに参加するコンテナには `--ipc host` が要ります。
-- イメージの `FASTDDS_BUILTIN_TRANSPORTS=UDPv4` が効くのは、`SUBNET` などに上書きしたときです。
+#### 設定
+
+- 全イメージ（`ros2/Dockerfile`、`ros2/velodyne/Dockerfile` の `runtime`、`ros2/tools/Dockerfile`）に `ros2/dds/fastdds_profiles.xml` を `/fastdds_profiles.xml` として焼き込み、ENV は `ROS_DOMAIN_ID=42`・`ROS_AUTOMATIC_DISCOVERY_RANGE=SYSTEM_DEFAULT`・`FASTRTPS_DEFAULT_PROFILES_FILE=/fastdds_profiles.xml`・`ROS_LOG_DIR=/tmp/ros_log`・`ROS_HOME=/tmp/ros_home` です。`FASTDDS_BUILTIN_TRANSPORTS` と `LOCALHOST` は使いません。
+- XML の中身: 共有メモリ（SHM）のセグメントを **16 MiB / プロセス**、UDPv4 は `127.0.0.1` だけ（`maxInitialPeersRange 32`）、多播なし、`initialPeersList` は `127.0.0.1`。同じホストの別コンテナと SHM でつながり、**同じ LAN の別 PC には見えません**。`LOCALHOST` のままのコンテナ（他リポで未更新のもの）とも混在できます。
+- 以前の `LOCALHOST` は、rmw_fastrtps が XML を読んだ**後に** 512 KiB の既定 SHM を足すため、1.5 MB の `/velodyne_points`（約 24 断片）が best-effort で欠けました（断片 1 つで 1 フレームを失う）。reliable は再送されるので欠けません。LOCALHOST の UDP は全インターフェースで開きますが、LAN に出ないのは多播を作らず peer が `127.0.0.1` だけのためです。
+- `ipc: host` と `network_mode: host` は全コンテナの前提です（compose が付けます。`docker run` は `--ipc host --network host`）。`ipc: host` が無いと SHM が使えません。
+- XML と `ros2/dds/dds_check.sh` は他リポ（datagnss・description・pointcloud）と nav-stack に複製します。正は本リポで、複製は sha256 で照合します（`fastdds_profiles.xml` の先頭コメントに「変えるときは tsukuchalle_drivers を先に」）。
+
+#### 起動時の検査（`/dds_check.sh`）
+
+全イメージの ENTRYPOINT の先頭で走り、次のどれかなら理由を出して終了 1 にします。`compose exec` や `--entrypoint` の上書きは通らないので、`exec` で `ros2` を使うときは ENV の設定だけが効きます。
+
+- `TSUKUCHALLE_UID` が設定されていて `id -u` と違う（`0` なら root で通る。未設定なら uid は見ない）。
+- `FASTRTPS_DEFAULT_PROFILES_FILE` が読めない、または `is_default_profile="true"` の participant profile が無い。
+- `ROS_AUTOMATIC_DISCOVERY_RANGE` が `SYSTEM_DEFAULT` でない。XML が読まれないと SUBNET の既定に落ち、LAN に多播で出て 512 KiB の SHM に戻るのを防ぎます。
+
+試験: `ros2/dds/test_dds_check.sh`（この PC で）、`ros2/dds/test_dds_check.sh <イメージ>`（イメージの中のスクリプトを uid 1000・0 で）。
+
+#### 実行 uid は全 ROS プロセスで 1 つ（X13 は 1000）
+
+- SHM のファイル（`/dev/shm/fastrtps_*`）は**作った側の uid で `0644`** です。`umask` を変えても直りません。別 uid のプロセスは相手を発見（match）できても書き込めず、**エラーなしで 0 受信**になります（`ros2 topic list` や購読者数では見つからず、実際に受信を数えるしかありません）。
+- そのため、compose は全サービスに `user: "${TSUKUCHALLE_UID:-1000}:${TSUKUCHALLE_GID:-1000}"` を付け、nav-stack（pixi）と `ros2` CLI は同じログインユーザーで動かします。**`sudo ros2 ...` は root になり 0 受信になるので使わないでください。**
+- 書き込み先は `/tmp` の下（`ROS_LOG_DIR`・`ROS_HOME`）です。イメージに `useradd` はしません（root でも 1000 でも動く）。`drive`・`joy` は数値の GID を `group_add` で足します（上の `.env` の表）。
+- **暫定（他リポのコンテナがまだ root のとき）**: `.env` に `TSUKUCHALLE_UID=0` と `TSUKUCHALLE_GID=0` を書いて本リポも root で動かします（`/dds_check.sh` は 0 でも通る）。DDS の XML は混在できるので配る順は任意ですが、**uid の切り替えは X13 の全 ROS コンテナ（本リポ・datagnss・description/foxglove・pointcloud）が新イメージになってから同時に**行います。
+
+#### 切り替え手順（root から uid 1000 へ。全コンテナ同時）
+
+root のコンテナが作った `fastrtps_*` は `/dev/shm`（1777、sticky）では uid 1000 から消せず、同じ名前のポートファイルを開けないため、先に掃除します。
+
+```sh
+# 1. 全 compose プロジェクト（本リポ・datagnss・description・pointcloud）を止める。velodyne は --profile velodyne も付ける
+docker compose --profile velodyne --profile keyboard down
+# 2. 残骸を消し、root 所有が 0 であることを確かめる（ホストに fastdds CLI は無い。tools イメージの `fastdds shm clean` でも可）
+ls -la /dev/shm | grep fastrtps
+sudo rm -f /dev/shm/fastrtps_*
+ls -la /dev/shm | grep -c fastrtps            # 0
+# 3. 各 .env の TSUKUCHALLE_UID=0 / TSUKUCHALLE_GID=0 を消す（または 1000 にする）
+# 4. 全部起動し、所有者が全部ログインユーザーであることを確かめる
+docker compose up -d drive joy teleop && docker compose --profile velodyne up -d velodyne-driver velodyne-transform
+ls -la /dev/shm | grep fastrtps               # 所有者は全部 nyanziba（1000）
+docker compose exec drive id -u               # 1000
+```
+
+#### RAM と `/dev/shm`
+
+- SHM のセグメントは**プロセス（Context）ごと**に 1 つで、確保時に `memset` するので RAM を実際に使います。1 プロセスあたり約 17,564,192 B（16 MiB ＋ 約 0.75 MiB）です。`ros2` の daemon や CLI を 1 回起動するたびにも 1 つ増えます。
+- X13 の常時プロセス ≈ 15 で約 250 MiB（`/dev/shm` は 3.5 GiB の tmpfs）。`df /dev/shm` と `ls -la /dev/shm` で合計を照合します。コンテナを kill すると `fastrtps_*` が残ることがあるので、増え続けるときは全部止めて `sudo rm -f /dev/shm/fastrtps_*` です。
+- `--ipc host` の無いコンテナ（1 コンテナに participant が 4 つ以上）は `--shm-size=256m` 以上が必要です。Docker の既定 64 MiB や 32m では participant を作れず起動時に異常終了します（`Failed to create segment`）。
+
+#### Mac から見る（`TSUKUCHALLE_DDS_MODE=lan`）
+
+普段は Foxglove で見ます。Mac の ROS 2 から直接見るときだけ、`.env` に `TSUKUCHALLE_DDS_MODE=lan` を書いて `docker compose up -d` し直します。`/dds_check.sh` が XML と `SYSTEM_DEFAULT` を外して SUBNET に戻します。**この間は 512 KiB の SHM と多播に戻るので、best-effort の欠けが再発し、LAN から見えます。** 終わったら `.env` から消して `up -d` し直します。Mac 側は XML なしの既定のままで、`export ROS_DOMAIN_ID=42` だけで見えます。
 
 ## 安全動作
 

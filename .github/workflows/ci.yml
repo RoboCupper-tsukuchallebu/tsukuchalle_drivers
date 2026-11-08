@@ -175,14 +175,19 @@ jobs:
         run: |
           ros2/dds/check_image.sh ddt-can-bridge-ros2:ci
           ros2/dds/test_dds_check.sh ddt-can-bridge-ros2:ci
-      # No `port` and no board: the node exits at once, after rcl made its log directory. uid 1000 cannot
-      # write to / or HOME, so this fails if ROS_LOG_DIR / ROS_HOME are not set in the image.
-      - name: diff_drive_node starts as uid 1000 (log directory is writable)
+      # No `port` and no board: the node gets as far as its own "expected one board" error, which comes after
+      # rcl made its log directory. 4242 has no passwd entry, so there is no HOME: this fails if ROS_LOG_DIR /
+      # ROS_HOME are not set in the image (1000 is the real case; the base image's `ubuntu` user hides it).
+      - name: diff_drive_node starts as uid 1000 and as a uid without HOME
         run: |
-          rc=0
-          docker run --rm --network host --ipc host --init --user 1000:1000 -e TSUKUCHALLE_UID=1000 \
-            ddt-can-bridge-ros2:ci 2>&1 | tee diff-drive.log || rc=$?
-          ! grep -qiE 'permission denied|read-only|could not (create|open)|unable to|rcutils' diff-drive.log
+          for uid in 1000 4242; do
+            # The node exits 1 by design (no board), so the status is not checked; the log is.
+            docker run --rm --network host --ipc host --init --user "$uid:$uid" -e TSUKUCHALLE_UID="$uid" \
+              ddt-can-bridge-ros2:ci > "diff-drive-$uid.log" 2>&1 || true
+            cat "diff-drive-$uid.log"
+            grep -q 'expected one board, found \[\]' "diff-drive-$uid.log"
+            ! grep -q 'failed to initialize logging' "diff-drive-$uid.log"
+          done
 
   udev:
     runs-on: ubuntu-24.04
