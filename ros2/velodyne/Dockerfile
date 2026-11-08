@@ -4,8 +4,9 @@
 # Stages: base -> builder (colcon build + collect_runtime.sh) -> test (CI only), and runtime (last,
 # so a plain `docker build` makes it). `runtime` is ubuntu:noble plus the files collect_runtime.sh
 # gathered from `builder`; it has no apt-installed ROS, no compiler and no PCL, so scripts/deploy.sh
-# sends tens of MiB instead of ~1 GiB. There is no ENTRYPOINT and setup.bash is not sourced: the
-# compose `command` runs the executables directly. For ros2 CLI / rosbag use ros2/tools/Dockerfile.
+# sends tens of MiB instead of ~1 GiB. The only ENTRYPOINT is /dds_check.sh (a POSIX sh script that
+# checks uid and Fast DDS settings, then execs the command) and setup.bash is not sourced: the compose
+# `command` runs the executables directly. For ros2 CLI / rosbag use ros2/tools/Dockerfile.
 
 # Digests taken 2026-11-07. The ubuntu digest is the index whose amd64 root layer is the bottom layer of
 # the ros base image below (compare with `docker image inspect --format '{{index .RootFS.Layers 0}}'`),
@@ -60,12 +61,16 @@ COPY --from=builder /runtime-root /
 # which only looks in the directories of LD_LIBRARY_PATH and never in ld.so.cache. Replacing it with
 # ldconfig makes the nodes fail at startup. Every library directory collect_runtime.sh used is in it
 # (CI checks that).
-# ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST needs `ipc: host` (see ros2/Dockerfile).
+# Fast DDS profile, uid and log directories: see ros2/Dockerfile.
 ENV LANG=C.UTF-8 \
     ROS_DISTRO=jazzy \
     RMW_IMPLEMENTATION=rmw_fastrtps_cpp \
     LD_LIBRARY_PATH=${RUNTIME_LIBRARY_PATH} \
-    ROS_LOG_DIR=/tmp/ros_log \
     ROS_DOMAIN_ID=42 \
-    ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST \
-    FASTDDS_BUILTIN_TRANSPORTS=UDPv4
+    ROS_AUTOMATIC_DISCOVERY_RANGE=SYSTEM_DEFAULT \
+    FASTRTPS_DEFAULT_PROFILES_FILE=/fastdds_profiles.xml \
+    ROS_LOG_DIR=/tmp/ros_log \
+    ROS_HOME=/tmp/ros_home
+COPY --chmod=0644 ros2/dds/fastdds_profiles.xml /fastdds_profiles.xml
+COPY --chmod=0755 ros2/dds/dds_check.sh /dds_check.sh
+ENTRYPOINT ["/dds_check.sh"]

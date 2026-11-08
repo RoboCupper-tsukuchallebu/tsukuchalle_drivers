@@ -1,17 +1,25 @@
 # Run from the directory holding this file (scripts/deploy.sh puts it in ~/ddt-can-bridge/ with config/).
 # DDT_SERIAL_DEVICE (required): host path of the board, /dev/serial/by-id/usb-... (not /dev/ttyACM0, which can change on replug).
 # DDT_IMAGE_TAG: image tag, default latest.
+# .env (optional, see README): TSUKUCHALLE_UID / TSUKUCHALLE_GID (default 1000: the login user of the robot PC),
+# TSUKUCHALLE_DIALOUT_GID (20) and TSUKUCHALLE_INPUT_GID (995 = X13; other PCs: getent group dialout input).
+# Every ROS process on the host must have one uid (shared-memory files are owner-only): see README.
 x-ros-common: &ros-common
   image: ddt-can-bridge-ros2:${DDT_IMAGE_TAG:-latest}
   network_mode: host
-  # LOCALHOST discovery uses shared memory between processes on one host; it does not cross
-  # containers unless they share the IPC namespace.
+  # Fast DDS shared memory between processes on one host does not cross containers unless they
+  # share the IPC namespace. The Fast DDS settings (XML, SYSTEM_DEFAULT) are the image's ENV.
   ipc: host
+  # Numeric ids: the image has no user of this uid, and group_add needs ids that exist on the host.
+  # /dds_check.sh stops the container when `id -u` differs from TSUKUCHALLE_UID.
+  user: "${TSUKUCHALLE_UID:-1000}:${TSUKUCHALLE_GID:-1000}"
   init: true
   restart: "no"
   environment:
     ROS_DOMAIN_ID: ${ROS_DOMAIN_ID:-42}
-    ROS_AUTOMATIC_DISCOVERY_RANGE: ${ROS_AUTOMATIC_DISCOVERY_RANGE:-LOCALHOST}
+    TSUKUCHALLE_UID: ${TSUKUCHALLE_UID:-1000}
+    # lan = look from a Mac: /dds_check.sh drops the Fast DDS profile and SYSTEM_DEFAULT (README).
+    TSUKUCHALLE_DDS_MODE: ${TSUKUCHALLE_DDS_MODE:-}
 
 services:
   # Starts with the motors disabled. Enable by hand: see README.
@@ -25,6 +33,9 @@ services:
       - /dev:/dev
     device_cgroup_rules:
       - "c 166:* rmw"
+    # /dev/ttyACM* is root:dialout 0660 (udev rule), and user: is not root.
+    group_add:
+      - "${TSUKUCHALLE_DIALOUT_GID:-20}"
     command:
       - /ws/install/ddt_diff_drive/lib/ddt_diff_drive/diff_drive_node
       - --ros-args
@@ -59,6 +70,9 @@ services:
       - /run/udev:/run/udev:ro
     device_cgroup_rules:
       - "c 13:* rmw"
+    # /dev/input/event* is root:input 0660. The input GID is not fixed across PCs (995 on X13).
+    group_add:
+      - "${TSUKUCHALLE_INPUT_GID:-995}"
 
   # Keyboard fallback: docker compose run --rm teleop-keyboard
   teleop-keyboard:
@@ -69,7 +83,7 @@ services:
     command: ros2 run teleop_twist_keyboard teleop_twist_keyboard
 
   # HDL-32E on the USB LAN (sensor 192.168.100.200 -> host 192.168.100.100, UDP 2368). Separate, minimal
-  # image (ubuntu:noble + the two executables and their libraries, no shell wrapper, no ros2 CLI):
+  # image (ubuntu:noble + the two executables and their libraries; its only ENTRYPOINT is /dds_check.sh, no ros2 CLI):
   # deploy.sh ships whole images. For `ros2 topic hz` / bag use tsukuchalle-ros-tools (ros2/tools).
   # VELODYNE_IMAGE_TAG: image tag, default latest.
   # profiles: a plain `docker compose up -d` must not start these on a robot that only got the ddt image.

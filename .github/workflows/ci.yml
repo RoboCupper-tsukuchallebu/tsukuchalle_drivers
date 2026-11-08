@@ -75,6 +75,31 @@ jobs:
           size_mib=$((size_bytes / 1024 / 1024))
           echo "tsukuchalle-velodyne:ci compressed: ${size_mib} MiB (limit ${VELODYNE_IMAGE_LIMIT_MIB})"
           test "$size_mib" -le "$VELODYNE_IMAGE_LIMIT_MIB"
+      # ros2/dds/: the Fast DDS profile and the uid check are in every image, in front of every command.
+      - name: dds_check.sh on this machine
+        run: ros2/dds/test_dds_check.sh
+      - name: DDS files, ENV and ENTRYPOINT of the runtime and tools images
+        run: |
+          for image in tsukuchalle-velodyne:ci tsukuchalle-ros-tools:ci; do
+            ros2/dds/check_image.sh "$image"
+            ros2/dds/test_dds_check.sh "$image"
+          done
+      - name: Compose runs every service as TSUKUCHALLE_UID with the device groups
+        run: |
+          export DDT_SERIAL_DEVICE=/dev/null
+          show() { docker compose -f ros2/compose.yaml --profile velodyne --profile keyboard config --format json |
+            jq -r '.services | to_entries[] | [.key, .value.user, .value.environment.TSUKUCHALLE_UID,
+              (.value.group_add // [] | join(",")), (.value.environment.ROS_AUTOMATIC_DISCOVERY_RANGE // "-")] | @tsv'; }
+          show | tee compose-default.tsv
+          # service, user, TSUKUCHALLE_UID, group_add, ROS_AUTOMATIC_DISCOVERY_RANGE (must stay unset: the image decides)
+          for service in teleop teleop-keyboard velodyne-driver velodyne-transform; do
+            grep -qxP "$service\t1000:1000\t1000\t\t-" compose-default.tsv
+          done
+          grep -qxP 'drive\t1000:1000\t1000\t20\t-' compose-default.tsv
+          grep -qxP 'joy\t1000:1000\t1000\t995\t-' compose-default.tsv
+          # the temporary root operation of the README
+          TSUKUCHALLE_UID=0 TSUKUCHALLE_GID=0 show | cut -f2,3 | sort -u | tee compose-root.tsv
+          test "$(cat compose-root.tsv)" = "$(printf '0:0\t0')"
       - name: Runtime image has no build tools and every library resolves
         run: docker run --rm -i --entrypoint bash tsukuchalle-velodyne:ci -s < ros2/velodyne/check_runtime_image.sh
       # A runtime libc6 / libstdc++6 that differs from the builder (whose libraries were copied) breaks glibc.
@@ -103,13 +128,21 @@ jobs:
           readarray -t driver_command < <(jq -r '.services["velodyne-driver"].command
             | map(if startswith("device_ip:=") then "device_ip:=127.0.0.1" else . end) | .[]' <<< "$config")
           readarray -t transform_command < <(jq -r '.services["velodyne-transform"].command[]' <<< "$config")
+          # Three participants share the host's /dev/shm (--ipc host), 16.75 MiB each plus the test's
+          # subscriber processes (4 more). --shm-size only matters for a container without --ipc host.
+          shm_avail_bytes=$(df -B1 --output=avail /dev/shm | tail -n 1)
+          echo "/dev/shm available: $((shm_avail_bytes / 1024 / 1024)) MiB"
+          test "$shm_avail_bytes" -ge $((8 * 18 * 1024 * 1024))
           docker run -d --name velodyne-driver --network host --ipc host --init \
+            --user 1000:1000 -e TSUKUCHALLE_UID=1000 --shm-size=256m \
             tsukuchalle-velodyne:ci "${driver_command[@]}"
           docker run -d --name velodyne-transform --network host --ipc host --init \
+            --user 1000:1000 -e TSUKUCHALLE_UID=1000 --shm-size=256m \
             tsukuchalle-velodyne:ci "${transform_command[@]}"
       - name: Feed synthetic HDL-32E packets through driver and converter
         run: |
-          docker run --rm --network host --ipc host -v "$PWD/ros2/velodyne:/test:ro" \
+          docker run --rm --network host --ipc host --user 1000:1000 -e TSUKUCHALLE_UID=1000 --shm-size=256m \
+            -v "$PWD/ros2/velodyne:/test:ro" \
             tsukuchalle-ros-tools:ci python3 -m unittest discover -s /test -v
       - name: Both nodes are still running
         run: |
@@ -135,8 +168,21 @@ jobs:
           context: .
           file: ros2/Dockerfile
           tags: ddt-can-bridge-ros2:ci
+          load: true
           cache-from: type=gha,scope=ddt-image
           cache-to: type=gha,mode=max,scope=ddt-image
+      - name: DDS files, ENV and ENTRYPOINT
+        run: |
+          ros2/dds/check_image.sh ddt-can-bridge-ros2:ci
+          ros2/dds/test_dds_check.sh ddt-can-bridge-ros2:ci
+      # No `port` and no board: the node exits at once, after rcl made its log directory. uid 1000 cannot
+      # write to / or HOME, so this fails if ROS_LOG_DIR / ROS_HOME are not set in the image.
+      - name: diff_drive_node starts as uid 1000 (log directory is writable)
+        run: |
+          rc=0
+          docker run --rm --network host --ipc host --init --user 1000:1000 -e TSUKUCHALLE_UID=1000 \
+            ddt-can-bridge-ros2:ci 2>&1 | tee diff-drive.log || rc=$?
+          ! grep -qiE 'permission denied|read-only|could not (create|open)|unable to|rcutils' diff-drive.log
 
   udev:
     runs-on: ubuntu-24.04

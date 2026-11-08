@@ -62,6 +62,22 @@ done
 [[ -r /ws/install/tsukuchalle_velodyne/share/tsukuchalle_velodyne/config/32db.yaml ]] ||
   fail "32db.yaml is missing"
 
+# (6) The Fast DDS profile and the check in front of every command (ros2/dds/, issue #19).
+[[ -r /fastdds_profiles.xml ]] || fail "/fastdds_profiles.xml is not readable"
+grep -q 'is_default_profile="true"' /fastdds_profiles.xml 2> /dev/null ||
+  fail "/fastdds_profiles.xml has no is_default_profile=\"true\" participant profile"
+[[ -x /dds_check.sh ]] || fail "/dds_check.sh is not executable"
+sh -n /dds_check.sh || fail "sh -n /dds_check.sh failed"
+# dds_check.sh uses only these; the image has no other shell tool it could rely on by accident.
+for command_name in sh id test cat; do
+  command -v "$command_name" > /dev/null || fail "$command_name is missing (dds_check.sh needs it)"
+done
+[[ ${FASTRTPS_DEFAULT_PROFILES_FILE:-} == /fastdds_profiles.xml ]] || fail "FASTRTPS_DEFAULT_PROFILES_FILE is not /fastdds_profiles.xml"
+[[ ${ROS_AUTOMATIC_DISCOVERY_RANGE:-} == SYSTEM_DEFAULT ]] || fail "ROS_AUTOMATIC_DISCOVERY_RANGE is not SYSTEM_DEFAULT"
+[[ ${ROS_LOG_DIR:-} == /tmp/* ]] || fail "ROS_LOG_DIR is not under /tmp"
+[[ ${ROS_HOME:-} == /tmp/* ]] || fail "ROS_HOME is not under /tmp"
+[[ -z ${FASTDDS_BUILTIN_TRANSPORTS+x} ]] || fail "FASTDDS_BUILTIN_TRANSPORTS is set (it has no effect with the profile)"
+
 if ((failure_count > 0)); then
   echo "$failure_count check(s) failed"
   exit 1
