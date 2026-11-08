@@ -28,13 +28,15 @@ if [ "${TSUKUCHALLE_DDS_MODE:-}" = lan ]; then
 fi
 
 profiles_file="${FASTRTPS_DEFAULT_PROFILES_FILE:-}"
-[ -f "$profiles_file" ] && [ -r "$profiles_file" ] ||
+if [ ! -f "$profiles_file" ] || [ ! -r "$profiles_file" ]; then
   fail "FASTRTPS_DEFAULT_PROFILES_FILE='$profiles_file' is not a readable file"
+fi
 profiles_text=$(cat "$profiles_file")
 case "$profiles_text" in
   *'is_default_profile="true"'*) ;;
   *) fail "$profiles_file has no is_default_profile=\"true\" participant profile" ;;
 esac
-[ "${ROS_AUTOMATIC_DISCOVERY_RANGE:-}" = SYSTEM_DEFAULT ] ||
+if [ "${ROS_AUTOMATIC_DISCOVERY_RANGE:-}" != SYSTEM_DEFAULT ]; then
   fail "ROS_AUTOMATIC_DISCOVERY_RANGE='${ROS_AUTOMATIC_DISCOVERY_RANGE:-}' must be SYSTEM_DEFAULT"
+fi
 exec "$@"
