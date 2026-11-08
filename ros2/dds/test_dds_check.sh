@@ -109,6 +109,7 @@ expect_pass "lan mode: missing xml and SUBNET pass" \
   TSUKUCHALLE_DDS_MODE=lan -- true
 # After dds_check.sh the command may run behind a ROS entrypoint, and /opt/ros/jazzy/setup.bash exports an
 # unset ROS_AUTOMATIC_DISCOVERY_RANGE as SUBNET (the default), so "removed" means unset or SUBNET.
+# shellcheck disable=SC2016 # the single quotes are deliberate: the command's own sh expands them
 lan_output=$(run_case "$current_user" FASTRTPS_DEFAULT_PROFILES_FILE="$good_xml" ROS_AUTOMATIC_DISCOVERY_RANGE=SYSTEM_DEFAULT \
   TSUKUCHALLE_DDS_MODE=lan -- sh -c 'echo "profile=${FASTRTPS_DEFAULT_PROFILES_FILE-unset} range=${ROS_AUTOMATIC_DISCOVERY_RANGE-unset}"' 2>/dev/null)
 case "$lan_output" in

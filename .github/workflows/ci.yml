@@ -76,6 +76,10 @@ jobs:
           echo "tsukuchalle-velodyne:ci compressed: ${size_mib} MiB (limit ${VELODYNE_IMAGE_LIMIT_MIB})"
           test "$size_mib" -le "$VELODYNE_IMAGE_LIMIT_MIB"
       # ros2/dds/: the Fast DDS profile and the uid check are in every image, in front of every command.
+      - name: shellcheck (dds_check.sh must stay POSIX sh)
+        run: |
+          shellcheck -s sh ros2/dds/dds_check.sh ros2/dds/test_dds_check.sh
+          shellcheck -s bash ros2/dds/check_image.sh ros2/velodyne/check_runtime_image.sh
       - name: dds_check.sh on this machine
         run: ros2/dds/test_dds_check.sh
       - name: DDS files, ENV and ENTRYPOINT of the runtime and tools images
