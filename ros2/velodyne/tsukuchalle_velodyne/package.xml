@@ -1,0 +1,22 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>tsukuchalle_velodyne</name>
+  <version>0.1.0</version>
+  <description>Velodyne HDL-32E packet to PointCloud2 converter without PCL (formulas ported from ros-drivers/velodyne rawdata.cpp).</description>
+  <maintainer email="126231924+Nyanziba@users.noreply.github.com">Nyanziba</maintainer>
+  <license>BSD-3-Clause (conversion formulas derived from ros-drivers/velodyne)</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>rclcpp</depend>
+  <depend>sensor_msgs</depend>
+  <depend>velodyne_msgs</depend>
+  <depend>yaml-cpp</depend>
+
+  <test_depend>ament_cmake_gtest</test_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>
