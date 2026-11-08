@@ -5,13 +5,22 @@ Both nodes run in their own containers (tsukuchalle-velodyne image, started by C
 too). This test runs in the tools image, which has rclpy and the velodyne_msgs Python types:
     docker run --rm --network host --ipc host -v "$PWD/ros2/velodyne:/test:ro" \
         tsukuchalle-ros-tools:ci python3 -m unittest discover -s /test -v
-Use the same ROS_DOMAIN_ID (-e) for all three containers.
+Use the same ROS_DOMAIN_ID (-e) and uid (--user) for all three containers; ros2/dds/dds_check.sh
+(the ENTRYPOINT of both images) stops a container whose uid differs from TSUKUCHALLE_UID, so CI passes
+`--user 1000:1000 -e TSUKUCHALLE_UID=1000 --shm-size=256m` to all of them.
+
+No frame may be lost, best-effort included (issue #19): the Fast DDS profile gives each participant a
+16 MiB shared memory segment, so a 1.5 MB sample (24 fragments of 64 KB) does not overflow it.
 """
 
 import itertools
 import math
+import os
+import re
 import socket
 import struct
+import subprocess
+import sys
 import time
 import unittest
 
@@ -27,7 +36,9 @@ RELIABLE_QOS = QoSProfile(depth=10, reliability=ReliabilityPolicy.RELIABLE)
 SENSOR_ADDRESS = ("127.0.0.1", 2368)
 
 REVOLUTION_COUNT = 20
-ACCEPTED_FRAME_LOSS = 3
+SUBSCRIBER_SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "count_subscriber.py")
+SUBSCRIBER_SETTLE_SECONDS = 1.0  # a reader found by discovery is not matched by the writer yet
+BEST_EFFORT_PROCESS_COUNT = 3
 PACKETS_PER_BATCH = 18
 BATCH_INTERVAL_SECONDS = 0.01
 DEADLINE_SECONDS = 30.0
@@ -83,39 +94,78 @@ class VelodynePipelineTest(unittest.TestCase):
         spin_until(node, lambda: False, IDLE_SECONDS)
         self.assertIn(DRIVER_NODE_NAME, self.node_names(node))
 
-    def test_synthetic_revolutions_become_organized_point_clouds(self):
-        node = rclpy.create_node("velodyne_pipeline_test")
+    def test_b_best_effort_subscription_receives_every_frame(self):
+        # nav-stack and tsukuchalle_pointcloud subscribe with SensorDataQoS: best-effort does not
+        # retransmit, so a lost fragment loses the whole 1.5 MB frame.
+        node = rclpy.create_node("velodyne_best_effort_test")
         self.addCleanup(node.destroy_node)
         serialized_clouds = []
         # The callbacks only store the serialized bytes (raw=True): converting a 1.5 MB message
         # to Python objects, let alone walking 69,504 points, takes longer than the 100 ms
         # between frames.
         subscription = node.create_subscription(
+            PointCloud2, "/velodyne_points", serialized_clouds.append, qos_profile_sensor_data, raw=True
+        )
+        self.wait_for_pipeline(node, [subscription])
+
+        self.send_revolutions(node)
+        spin_until(node, lambda: len(serialized_clouds) >= REVOLUTION_COUNT, DEADLINE_SECONDS)
+
+        self.assertEqual(len(serialized_clouds), REVOLUTION_COUNT, "best-effort frames were lost")
+        self.assert_clouds(serialized_clouds)
+
+    def test_c_best_effort_processes_and_reliable_subscription_receive_every_frame(self):
+        # The production mix: nav-stack (2 nodes) and pointcloud read best-effort, Foxglove may read
+        # reliable. Each best-effort reader is its own process, as there; the reliable one is here.
+        node = rclpy.create_node("velodyne_mixed_test")
+        self.addCleanup(node.destroy_node)
+        serialized_clouds = []
+        subscription = node.create_subscription(
             PointCloud2, "/velodyne_points", serialized_clouds.append, RELIABLE_QOS, raw=True
         )
-        # nav-stack subscribes with SensorDataQoS, so a match of a best-effort subscription with
-        # the reliable publisher is the compatibility check. It is destroyed before sending:
-        # its frames are not counted, and it would compete with the reliable one for the
-        # publisher's shared memory segment. Best-effort frames do get lost: with
-        # ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST the rmw adds a default Fast DDS shared memory
-        # transport whose 512 KiB segment overflows when one 1.5 MB sample (about 24 fragments
-        # of 64 KB) is sent, and best-effort does not retransmit. Tracked in a separate issue.
-        best_effort_subscription = node.create_subscription(
-            PointCloud2, "/velodyne_points", lambda _: None, qos_profile_sensor_data, raw=True
+        subscriber_processes = [
+            subprocess.Popen(
+                [sys.executable, SUBSCRIBER_SCRIPT, "best-effort"],
+                stdout=subprocess.PIPE,
+                text=True,
+            )
+            for _ in range(BEST_EFFORT_PROCESS_COUNT)
+        ]
+        self.addCleanup(lambda: [process.kill() for process in subscriber_processes])
+        expected_subscriber_count = 1 + BEST_EFFORT_PROCESS_COUNT
+        self.wait_for_pipeline(
+            node,
+            [subscription],
+            lambda: node.count_subscribers("/velodyne_points") >= expected_subscriber_count,
         )
 
+        self.send_revolutions(node)
+        spin_until(node, lambda: len(serialized_clouds) >= REVOLUTION_COUNT, DEADLINE_SECONDS)
+
+        self.assertEqual(len(serialized_clouds), REVOLUTION_COUNT, "reliable frames were lost")
+        self.assert_clouds(serialized_clouds)
+        for process in subscriber_processes:
+            output, _ = process.communicate(timeout=DEADLINE_SECONDS)
+            match = re.search(r"^COUNT (\d+)$", output, re.MULTILINE)
+            self.assertIsNotNone(match, f"best-effort process printed no count: {output!r}")
+            self.assertEqual(
+                int(match.group(1)), REVOLUTION_COUNT, "best-effort frames were lost"
+            )
+
+    def wait_for_pipeline(self, node, subscriptions, extra_condition=lambda: True):
         # driver publishes /velodyne_packets, the converter subscribes to it and publishes /velodyne_points.
         ready = spin_until(
             node,
             lambda: node.count_publishers("/velodyne_packets") >= 1
             and node.count_subscribers("/velodyne_packets") >= 1
-            and subscription.get_publisher_count() >= 1
-            and best_effort_subscription.get_publisher_count() >= 1,
+            and all(subscription.get_publisher_count() >= 1 for subscription in subscriptions)
+            and extra_condition(),
             DEADLINE_SECONDS,
         )
-        self.assertTrue(ready, "driver and converter were not discovered in time")
-        node.destroy_subscription(best_effort_subscription)
+        self.assertTrue(ready, "driver, converter and subscribers were not discovered in time")
+        spin_until(node, lambda: False, SUBSCRIBER_SETTLE_SECONDS)
 
+    def send_revolutions(self, node):
         sender = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.addCleanup(sender.close)
         batches = itertools.batched(
@@ -128,12 +178,8 @@ class VelodynePipelineTest(unittest.TestCase):
             next_send_time += BATCH_INTERVAL_SECONDS
             spin_until(node, lambda: False, max(next_send_time - time.monotonic(), 0))
 
-        # Stop at the full count or the deadline; frames can arrive late on a slow runner.
-        spin_until(node, lambda: len(serialized_clouds) >= REVOLUTION_COUNT, DEADLINE_SECONDS)
-
+    def assert_clouds(self, serialized_clouds):
         received_clouds = [deserialize_message(raw, PointCloud2) for raw in serialized_clouds]
-        minimum_frames = REVOLUTION_COUNT - ACCEPTED_FRAME_LOSS
-        self.assertGreaterEqual(len(serialized_clouds), minimum_frames, "too few frames")
         for cloud in received_clouds:
             self.assert_cloud_layout(cloud)
         self.assert_cloud_points(received_clouds[0])

@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!-- tsukuchalle fastdds profile v1: 他リポは複製。変えるときは tsukuchalle_drivers を先に -->
+<profiles xmlns="http://www.eprosima.com/XMLSchemas/fastRTPS_Profiles">
+  <transport_descriptors>
+    <transport_descriptor>
+      <transport_id>shm_16mib</transport_id>
+      <type>SHM</type>
+      <segment_size>16777216</segment_size>
+    </transport_descriptor>
+    <transport_descriptor>
+      <transport_id>udp_lo</transport_id>
+      <type>UDPv4</type>
+      <interfaceWhiteList><address>127.0.0.1</address></interfaceWhiteList>
+      <maxInitialPeersRange>32</maxInitialPeersRange>
+    </transport_descriptor>
+  </transport_descriptors>
+  <participant profile_name="tsukuchalle" is_default_profile="true">
+    <rtps>
+      <useBuiltinTransports>false</useBuiltinTransports>
+      <userTransports>
+        <transport_id>shm_16mib</transport_id>
+        <transport_id>udp_lo</transport_id>
+      </userTransports>
+      <builtin>
+        <metatrafficUnicastLocatorList>
+          <locator><udpv4/></locator>
+        </metatrafficUnicastLocatorList>
+        <initialPeersList>
+          <locator><udpv4><address>127.0.0.1</address></udpv4></locator>
+        </initialPeersList>
+      </builtin>
+    </rtps>
+  </participant>
+</profiles>
