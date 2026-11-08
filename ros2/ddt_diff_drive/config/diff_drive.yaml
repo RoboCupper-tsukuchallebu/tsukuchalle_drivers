@@ -35,3 +35,6 @@ diff_drive_node:
     # DISABLED) after this many seconds from the reconnect. Needs joy_node's autorepeat_rate > 0
     # (20 Hz in compose): with 0, no Joy arrives while idle and it always gives up.
     auto_reenable_wait_s: 10.0
+
+    # Publish TF odom -> base_footprint next to /wheel/odom. Can change at runtime.
+    publish_tf: true

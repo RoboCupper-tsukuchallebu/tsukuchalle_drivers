@@ -41,6 +41,8 @@ from ddt_diff_drive.kinematics import (
     twist_to_wheels,
     validation_error,
 )
+from ddt_diff_drive.odometry_publisher import OdometryPublisher
+from ddt_diff_drive.telemetry import BridgeTelemetry
 
 CONTROL_PERIOD_S = 0.02
 MAX_CONTROL_STEP_S = 0.04  # A stalled timer must not turn into one large speed jump.
@@ -142,8 +144,10 @@ def find_port(configured_port: str) -> str:
 class LoggingBridge(Bridge):
     """Routes bridge events to the ROS logger instead of stdout."""
 
-    def __init__(self, port: str, logger):
+    def __init__(self, port: str, logger, telemetry: BridgeTelemetry, odometry: OdometryPublisher):
         self._logger = logger
+        self._telemetry = telemetry
+        self._odometry = odometry
         self.last_status_time = None
         super().__init__(port)
 
@@ -160,6 +164,9 @@ class LoggingBridge(Bridge):
                            throttle_duration_sec=1.0)
 
     def on_feedback(self, feedback) -> None:
+        received_at = time.monotonic()
+        self._telemetry.record(feedback, received_at)
+        self._odometry.on_feedback(feedback, received_at)
         if feedback.fault != 0:
             self._logger.error(f"motor {feedback.motor_id} fault 0x{feedback.fault:02X}",
                                throttle_duration_sec=1.0)
@@ -195,7 +202,11 @@ class DiffDriveNode(Node):
         # A board that is missing at startup is a wiring mistake, so it ends the node here.
         self._configured_port = self.get_parameter("port").value
         self._port = find_port(self._configured_port)
-        self._bridge = LoggingBridge(self._port, self.get_logger())
+        self.declare_parameter("publish_tf", True)
+        self._telemetry = BridgeTelemetry()
+        self._odometry = OdometryPublisher(self, lambda: self._config)
+        self._odometry.is_tf_enabled = self.get_parameter("publish_tf").value
+        self._bridge = LoggingBridge(self._port, self.get_logger(), self._telemetry, self._odometry)
         self._connection = CONNECTED
         self._was_enabled = False  # The motors were on when the board was lost.
         self._disconnect_count = 0
@@ -274,6 +285,8 @@ class DiffDriveNode(Node):
                 reason=f"command_timeout_s must be in (0, {MAX_COMMAND_TIMEOUT_S}]")
         if "port" in overrides:
             return SetParametersResult(successful=False, reason="port cannot change at runtime")
+        if "publish_tf" in overrides and not isinstance(overrides["publish_tf"], bool):
+            return SetParametersResult(successful=False, reason="publish_tf must be a bool")
         if ("auto_reenable_wait_s" in overrides
                 and not is_valid_reenable_wait(overrides["auto_reenable_wait_s"])):
             return SetParametersResult(successful=False,
@@ -296,6 +309,7 @@ class DiffDriveNode(Node):
         self._command_timeout_s = overrides.get("command_timeout_s", self._command_timeout_s)
         self._auto_reenable_wait_s = overrides.get("auto_reenable_wait_s",
                                                    self._auto_reenable_wait_s)
+        self._odometry.is_tf_enabled = overrides.get("publish_tf", self._odometry.is_tf_enabled)
         return SetParametersResult(successful=True)
 
     def _on_cmd_vel(self, message: Twist) -> None:
@@ -517,7 +531,7 @@ class DiffDriveNode(Node):
         self._next_reconnect_at = now + RECONNECT_PERIOD_S
         try:
             port = find_port(self._configured_port)
-            self._bridge = LoggingBridge(port, self.get_logger())
+            self._bridge = LoggingBridge(port, self.get_logger(), self._telemetry, self._odometry)
         except (OSError, RuntimeError, termios.error) as error:
             self.get_logger().warn(f"reconnect failed: {error}", throttle_duration_sec=5.0)
             return
@@ -621,6 +635,8 @@ class DiffDriveNode(Node):
             self._bridge.set_velocity(*to_motor_rpm(self._output, self._config))
         except OSError as error:
             self._handle_lost_board(error)
+        finally:
+            self._odometry.publish()
 
 
 def main() -> None:

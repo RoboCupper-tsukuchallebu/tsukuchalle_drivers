@@ -138,6 +138,20 @@ flowchart LR
 - ノードが落ちた場合はファームの指令タイムアウト（200ms）で止まる。
 - このMacではDocker DesktopがUDP 7400（ドメイン0）を占有しているため、`ROS_DOMAIN_ID=42` とする。
 
+### 8.1 車輪オドメトリ
+
+```mermaid
+flowchart LR
+    F["FEEDBACK 0x81<br>モーターごと 100Hz"] --> P["Bridge.poll → LoggingBridge.on_feedback"]
+    P --> T["BridgeTelemetry<br>最新値を保持"]
+    P --> I["OdometryPublisher.on_feedback<br>左右の最新 rpm を中点法で積分"]
+    I -->|"制御タイマ 50Hz publish()"| O["/wheel/odom<br>TF odom→base_footprint"]
+```
+
+- 計算元はモーターのフィードバック rpm（指令値は使わない）。積分は受信（`poll`）ごと、出版は制御タイマ。`~/enable` のブロック中も `wait_for_state` の `poll` で積分が進む。
+- 左右どちらかが 0.1 秒（`FEEDBACK_STALE_S`）来ない、または前回のフレームから 0.1 秒超のときは積分せず、最後の積分から 0.1 秒超で出版も止める（沈黙 = 安全側）。全体が止まった後の最初のフレームは積分せず（基準時刻だけ更新）、失った秒数を WARN に出す。片輪だけが途絶して戻った場合は、動いていた側のフレームで基準時刻が進んでいるので、戻った最初のフレームから積分する。
+- 姿勢は車体より 20〜30 ms 古い。共分散は nav-stack が読まない名目値。
+
 ## 9. 懸念事項
 
 - **型番の差:** プロトコルはM15シリーズ（M1502D）資料に基づく。M1502Aでの実機確認が必要。

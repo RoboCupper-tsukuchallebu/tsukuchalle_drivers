@@ -1,5 +1,6 @@
 """Runs the real node against a pseudo-terminal that plays the firmware's role."""
 
+import math
 import os
 import pty
 import shutil
@@ -13,16 +14,19 @@ from unittest import mock
 
 import rclpy
 from geometry_msgs.msg import Twist
+from nav_msgs.msg import Odometry
 from rclpy.executors import SingleThreadedExecutor
 from rclpy.parameter import Parameter
 from sensor_msgs.msg import Joy
 from std_srvs.srv import SetBool
+from tf2_msgs.msg import TFMessage
 
 from ddt_diff_drive.ddt_bridge import (
     STATE_ACTIVE,
     STATE_DISABLED,
     TYPE_DISABLE,
     TYPE_ENABLE,
+    TYPE_FEEDBACK,
     TYPE_SET_VELOCITY,
     TYPE_STATUS,
     decode_frames,
@@ -36,6 +40,7 @@ STATE_ARMING = 1
 STATE_STOPPING = 3
 STATUS_PERIOD_S = 0.1
 ARMING_DELAY_S = 0.15
+FEEDBACK_PERIOD_S = 0.01  # Per motor, as the firmware reports.
 STOPPING_DELAY_S = 0.2
 JOY_PERIOD_S = 0.05  # joy_node's autorepeat_rate of 20 Hz.
 START_BUTTON = 7
@@ -70,6 +75,8 @@ class FakeFirmware:
         self._buffer = bytearray()
         self._pending = None
         self._last_status_time = 0.0
+        self._feedbacks = {}  # motor id -> (rpm, current_raw, fault, mode)
+        self._last_feedback_times = {}
         self._open_pty()
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._run, daemon=True)
@@ -88,6 +95,7 @@ class FakeFirmware:
             if self.controller_fd is None:
                 return
             os.unlink(self.device_path)
+            self._feedbacks.clear()  # A board that is gone reports nothing; start_feedback again.
             os.close(self.controller_fd)
             os.close(self._device_fd)
             self.controller_fd = None
@@ -112,9 +120,30 @@ class FakeFirmware:
         if self._pending and now >= self._pending[0]:
             self.state = self._pending[1]
             self._pending = None
+        self._send_feedbacks(now)
         if self.is_status_sent and now - self._last_status_time >= STATUS_PERIOD_S:
             self._last_status_time = now
             os.write(self.controller_fd, encode_frame(TYPE_STATUS, bytes([self.state, self.stop_reason])))
+
+    def start_feedback(self, motor_id: int, rpm: int, current_raw: int = 0, fault: int = 0,
+                       mode: int = 0x02) -> None:
+        with self._lock:
+            self._feedbacks[motor_id] = (rpm, current_raw, fault, mode)
+
+    def stop_feedback(self, motor_id: int) -> None:
+        with self._lock:
+            self._feedbacks.pop(motor_id, None)
+
+    def _send_feedbacks(self, now: float) -> None:
+        for motor_id, (rpm, current_raw, fault, mode) in list(self._feedbacks.items()):
+            if now - self._last_feedback_times.get(motor_id, 0.0) < FEEDBACK_PERIOD_S:
+                continue
+            self._last_feedback_times[motor_id] = now
+            payload = struct.pack("<BhhHBB", motor_id, rpm, current_raw, 0, fault, mode)
+            try:
+                os.write(self.controller_fd, encode_frame(TYPE_FEEDBACK, payload))
+            except BlockingIOError:
+                pass  # The node is not reading right now; a real board would drop it as well.
 
     def set_state(self, state: int, stop_reason: int = 0) -> None:
         self.state = state
@@ -154,7 +183,7 @@ class FakeFirmware:
         shutil.rmtree(self._link_directory)
 
 
-class DiffDriveNodeTest(unittest.TestCase):
+class NodeTestBase(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         rclpy.init()
@@ -221,6 +250,11 @@ class DiffDriveNodeTest(unittest.TestCase):
         self.assertTrue(future.done())
         return future.result()
 
+    def set_parameter(self, name: str, value) -> None:
+        self.assertTrue(self.node.set_parameters([Parameter(name, value=value)])[0].successful)
+
+
+class DiffDriveNodeTest(NodeTestBase):
     def test_stays_silent_until_enabled(self):
         self.spin_for(0.3, forward_twist())
         self.assertEqual(self.firmware.velocities, [])
@@ -473,9 +507,6 @@ class DiffDriveNodeTest(unittest.TestCase):
 
     # --- USB disconnect and automatic recovery ---
 
-    def set_parameter(self, name: str, value) -> None:
-        self.assertTrue(self.node.set_parameters([Parameter(name, value=value)])[0].successful)
-
     def unplug_and_replug(self, outage_s: float = 0.3, buttons=(), axes=None) -> None:
         self.firmware.disconnect()
         self.press(outage_s, buttons, axes)
@@ -724,6 +755,261 @@ class DiffDriveNodeTest(unittest.TestCase):
                 results = self.node.set_parameters(
                     [Parameter("auto_reenable_wait_s", value=seconds)])
                 self.assertFalse(results[0].successful)
+
+
+METERS_PER_REVOLUTION = 2.0 * math.pi * 0.0935
+FORWARD_SPEED_M_S = METERS_PER_REVOLUTION  # 60 rpm
+SPIN_RATE_RAD_S = METERS_PER_REVOLUTION * 2.0 / 0.26  # wheels at -60 / +60 rpm
+FEEDBACK_STALE_S = 0.1
+STEADY_AFTER_S = 0.2
+MIN_MESSAGES_PER_SECOND = 40
+TICK_S = 0.02
+
+
+def stamp_seconds(message: Odometry) -> float:
+    return message.header.stamp.sec + message.header.stamp.nanosec * 1e-9
+
+
+class WheelOdometryTest(NodeTestBase):
+    def setUp(self):
+        super().setUp()
+        self.odometry = []
+        self.transforms = []
+        self.client_node.create_subscription(Odometry, "/wheel/odom", self.odometry.append, 50)
+        self.client_node.create_subscription(TFMessage, "/tf", self.transforms.append, 50)
+        odom_publisher = self.node._odometry._odom_publisher
+        deadline = time.monotonic() + 5.0
+        while odom_publisher.get_subscription_count() == 0 and time.monotonic() < deadline:
+            self.executor.spin_once(timeout_sec=0.01)
+        self.spin_for(0.2)
+
+    def feed(self, first_rpm: int, second_rpm: int) -> None:
+        self.firmware.start_feedback(1, first_rpm)
+        self.firmware.start_feedback(2, second_rpm)
+
+    def feed_forward(self) -> None:
+        self.feed(60, -60)
+
+    def feed_spin(self) -> None:
+        # With the default signs both motors turn the same way for the wheels to oppose.
+        self.feed(-60, -60)
+
+    def steady_rates(self, field) -> float:
+        """Slope of a pose field over the steady part of what was received so far."""
+        start = stamp_seconds(self.odometry[0]) + STEADY_AFTER_S
+        steady = [message for message in self.odometry if stamp_seconds(message) >= start]
+        self.assertGreater(len(steady), 5)
+        return ((field(steady[-1]) - field(steady[0]))
+                / (stamp_seconds(steady[-1]) - stamp_seconds(steady[0])))
+
+    def message_count_after(self, seconds: float) -> int:
+        self.spin_for(seconds)
+        return len(self.odometry)
+
+    @staticmethod
+    def x(message): return message.pose.pose.position.x
+
+    @staticmethod
+    def y(message): return message.pose.pose.position.y
+
+    @staticmethod
+    def yaw(message):
+        orientation = message.pose.pose.orientation
+        return 2.0 * math.atan2(orientation.z, orientation.w)
+
+    def test_publishes_nothing_without_feedback(self):
+        self.spin_for(0.3)
+        self.assertEqual(self.odometry, [])
+        self.assertEqual(self.transforms, [])
+
+    def test_straight_line_matches_the_wheel_speed(self):
+        self.feed_forward()
+        self.spin_for(1.0)
+        self.assertAlmostEqual(self.steady_rates(self.x), FORWARD_SPEED_M_S,
+                               delta=FORWARD_SPEED_M_S * 0.05)
+        last = self.odometry[-1]
+        self.assertAlmostEqual(last.twist.twist.linear.x, FORWARD_SPEED_M_S, delta=0.02)
+        self.assertLess(abs(self.y(last)), 0.01)
+        self.assertLess(abs(self.yaw(last)), 0.02)
+        self.assertEqual(last.child_frame_id, "base_footprint")
+        self.assertEqual(last.header.frame_id, "odom")
+        self.assertAlmostEqual(self.x(last), FORWARD_SPEED_M_S, delta=FORWARD_SPEED_M_S * 0.15)
+
+    def test_rate_and_stamps_are_steady(self):
+        self.feed_forward()
+        self.spin_for(1.0)
+        self.assertGreaterEqual(len(self.odometry), MIN_MESSAGES_PER_SECOND)
+        stamps = [stamp_seconds(message) for message in self.odometry]
+        self.assertEqual(stamps, sorted(set(stamps)))
+
+    def test_spin_in_place(self):
+        self.feed_spin()
+        self.spin_for(0.5)
+        self.assertAlmostEqual(self.steady_rates(self.yaw), SPIN_RATE_RAD_S,
+                               delta=SPIN_RATE_RAD_S * 0.05)
+        self.assertLess(abs(self.x(self.odometry[-1])), 0.01)
+        self.assertLess(abs(self.y(self.odometry[-1])), 0.01)
+
+    def test_flipped_signs_still_drive_forward(self):
+        self.set_parameter("left_sign", -1)
+        self.set_parameter("right_sign", 1)
+        self.feed(-60, 60)
+        self.spin_for(0.6)
+        self.assertAlmostEqual(self.steady_rates(self.x), FORWARD_SPEED_M_S,
+                               delta=FORWARD_SPEED_M_S * 0.05)
+
+    def test_swapped_motor_ids_still_drive_forward(self):
+        self.set_parameter("left_motor_id", 2)
+        self.feed(-60, 60)  # Motor 2 is the left wheel (sign +1), motor 1 the right (sign -1).
+        self.spin_for(0.6)
+        self.assertAlmostEqual(self.steady_rates(self.x), FORWARD_SPEED_M_S,
+                               delta=FORWARD_SPEED_M_S * 0.05)
+
+    def test_integrates_while_disabled(self):
+        self.assertEqual(self.firmware.state, STATE_DISABLED)
+        self.feed_forward()
+        self.spin_for(1.0)
+        self.assertEqual(self.firmware.state, STATE_DISABLED)
+        self.assertGreater(self.x(self.odometry[-1]), 0.3)
+
+    def test_publishes_at_rate_while_standing_still(self):
+        self.feed(0, 0)
+        self.spin_for(1.0)
+        self.assertGreaterEqual(len(self.odometry), MIN_MESSAGES_PER_SECOND)
+        for message in self.odometry:
+            self.assertEqual((self.x(message), self.y(message), self.yaw(message)), (0.0, 0.0, 0.0))
+        stamps = [stamp_seconds(message) for message in self.odometry]
+        self.assertEqual(stamps, sorted(set(stamps)))
+
+    def test_silent_wheel_stops_the_extrapolation_after_a_stale_period(self):
+        self.feed_forward()
+        self.spin_for(0.6)
+        x_at_stop = self.x(self.odometry[-1])
+        self.firmware.stop_feedback(2)
+        self.spin_for(0.3)
+        count_when_quiet = len(self.odometry)
+        self.assertEqual(self.message_count_after(0.2), count_when_quiet)
+        extrapolated_m = self.x(self.odometry[-1]) - x_at_stop
+        self.assertLessEqual(extrapolated_m,
+                             (FEEDBACK_STALE_S + 2 * TICK_S) * FORWARD_SPEED_M_S)
+        x_paused = self.x(self.odometry[-1])
+        self.firmware.start_feedback(2, -60)
+        self.spin_for(0.5)
+        self.assertGreater(self.x(self.odometry[-1]), x_paused)
+        self.assertGreaterEqual(min(self.x(message) for message in self.odometry[-5:]),
+                                x_at_stop)
+
+    def test_silent_wheel_while_spinning_does_not_keep_turning(self):
+        self.feed_spin()
+        self.spin_for(0.4)
+        yaw_at_stop = self.yaw(self.odometry[-1])
+        self.firmware.stop_feedback(1)
+        self.spin_for(0.3)
+        count_when_quiet = len(self.odometry)
+        self.assertEqual(self.message_count_after(0.2), count_when_quiet)
+        turned_rad = self.yaw(self.odometry[-1]) - yaw_at_stop
+        self.assertLessEqual(turned_rad, (FEEDBACK_STALE_S + 2 * TICK_S) * SPIN_RATE_RAD_S)
+
+    def test_stops_on_disconnect_and_continues_from_the_same_pose(self):
+        self.feed_forward()
+        self.spin_for(0.6)
+        x_before = self.x(self.odometry[-1])
+        self.firmware.disconnect()
+        self.spin_for(0.4)
+        count_when_quiet = len(self.odometry)
+        self.assertEqual(self.message_count_after(0.2), count_when_quiet)
+        self.firmware.reconnect()
+        self.spin_for(1.5)
+        self.assertEqual(len(self.odometry), count_when_quiet)
+        self.feed_forward()
+        self.spin_for(0.5)
+        self.assertGreater(len(self.odometry), count_when_quiet)
+        self.assertGreater(self.x(self.odometry[count_when_quiet]), x_before - 1e-9)
+        self.assertGreater(self.x(self.odometry[-1]), x_before + 0.1)
+
+    def test_pose_keeps_integrating_while_enable_blocks(self):
+        self.feed_forward()
+        self.spin_for(0.5)
+        self.assertTrue(self.call_enable(True).success)
+        self.spin_for(0.2)
+        gaps = [(stamp_seconds(after) - stamp_seconds(before), before, after)
+                for before, after in zip(self.odometry, self.odometry[1:])]
+        gap_s, before, after = max(gaps, key=lambda gap: gap[0])
+        self.assertGreater(gap_s, ARMING_DELAY_S * 0.8)  # It really blocked.
+        self.assertAlmostEqual((self.x(after) - self.x(before)) / gap_s, FORWARD_SPEED_M_S,
+                               delta=FORWARD_SPEED_M_S * 0.2)
+
+    def test_warns_about_motion_lost_to_a_late_control_timer(self):
+        self.feed_forward()
+        self.spin_for(0.5)
+        x_before = self.x(self.odometry[-1])
+        logger_class = type(self.node.get_logger())
+        with mock.patch.object(logger_class, "warn", autospec=True) as warn:
+            time.sleep(0.3)  # The executor is not spinning: the control timer is late.
+            self.spin_for(0.3)
+        messages = [call.args[1] for call in warn.call_args_list]
+        self.assertTrue([message for message in messages if "dropped" in message], messages)
+        self.assertGreater(self.x(self.odometry[-1]), x_before)  # It carries on afterwards.
+
+    def test_tf_matches_odometry(self):
+        self.feed_forward()
+        self.spin_for(0.6)
+        by_stamp = {(t.header.stamp.sec, t.header.stamp.nanosec): t
+                    for message in self.transforms for t in message.transforms
+                    if t.child_frame_id == "base_footprint"}
+        self.assertGreater(len(by_stamp), 5)
+        matched = 0
+        for odometry in self.odometry:
+            transform = by_stamp.get((odometry.header.stamp.sec, odometry.header.stamp.nanosec))
+            if transform is None:
+                continue
+            matched += 1
+            self.assertEqual(transform.header.frame_id, "odom")
+            self.assertAlmostEqual(transform.transform.translation.x, self.x(odometry), delta=1e-6)
+            self.assertAlmostEqual(transform.transform.translation.y, self.y(odometry), delta=1e-6)
+            self.assertAlmostEqual(transform.transform.rotation.z,
+                                   odometry.pose.pose.orientation.z, delta=1e-6)
+            self.assertAlmostEqual(transform.transform.rotation.w,
+                                   odometry.pose.pose.orientation.w, delta=1e-6)
+        self.assertGreater(matched, 5)
+
+    def test_publish_tf_false_keeps_odometry_but_drops_tf(self):
+        self.set_parameter("publish_tf", False)
+        self.feed_forward()
+        self.spin_for(0.3)
+        self.assertGreater(len(self.odometry), 5)
+        self.assertEqual([t for message in self.transforms for t in message.transforms
+                          if t.child_frame_id == "base_footprint"], [])
+        self.set_parameter("publish_tf", True)
+        self.spin_for(0.3)
+        self.assertTrue([t for message in self.transforms for t in message.transforms
+                         if t.child_frame_id == "base_footprint"])
+
+    def test_rejects_non_bool_publish_tf(self):
+        try:
+            results = self.node.set_parameters([Parameter("publish_tf", value=1)])
+        except rclpy.exceptions.ParameterException:
+            return  # rclpy refuses the type itself before the node's callback.
+        self.assertFalse(results[0].successful)
+
+    def test_drive_ramps_while_feedback_flows(self):
+        self.feed_forward()
+        self.spin_for(0.15)
+        self.assertTrue(self.call_enable(True).success)
+        self.spin_for(0.5, forward_twist())
+        first, second = self.firmware.velocities[-1]
+        self.assertGreater(first, 10)
+        self.assertEqual(second, -first)
+
+    def test_failing_odometry_publisher_does_not_stop_the_drive(self):
+        self.feed_forward()
+        self.assertTrue(self.call_enable(True).success)
+        with mock.patch.object(self.node._odometry._odom_publisher, "publish",
+                               side_effect=RuntimeError("boom")):
+            self.spin_for(0.5, forward_twist())
+        first, second = self.firmware.velocities[-1]
+        self.assertGreater(first, 10)
+        self.assertEqual(second, -first)
 
 
 def make_joy(buttons=(), axes=None) -> Joy:
