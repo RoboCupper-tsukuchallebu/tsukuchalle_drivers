@@ -144,15 +144,15 @@ jobs:
           shm_avail_bytes=$(df -B1 --output=avail /dev/shm | tail -n 1)
           echo "/dev/shm available: $((shm_avail_bytes / 1024 / 1024)) MiB"
           test "$shm_avail_bytes" -ge $((8 * 18 * 1024 * 1024))
-          docker run -d --name velodyne-driver --network host --ipc host --init \
+          docker run -d --name velodyne-driver --network host --ipc host --pid host --init \
             --user 1000:1000 -e TSUKUCHALLE_UID=1000 --shm-size=256m \
             tsukuchalle-velodyne:ci "${driver_command[@]}"
-          docker run -d --name velodyne-transform --network host --ipc host --init \
+          docker run -d --name velodyne-transform --network host --ipc host --pid host --init \
             --user 1000:1000 -e TSUKUCHALLE_UID=1000 --shm-size=256m \
             tsukuchalle-velodyne:ci "${transform_command[@]}"
       - name: Feed synthetic HDL-32E packets through driver and converter
         run: |
-          docker run --rm --network host --ipc host --user 1000:1000 -e TSUKUCHALLE_UID=1000 --shm-size=256m \
+          docker run --rm --network host --ipc host --pid host --user 1000:1000 -e TSUKUCHALLE_UID=1000 --shm-size=256m \
             -v "$PWD/ros2/velodyne:/test:ro" \
             tsukuchalle-ros-tools:ci python3 -m unittest discover -s /test -v
       - name: Both nodes are still running
@@ -188,7 +188,7 @@ jobs:
           ros2/dds/test_dds_check.sh ddt-can-bridge-ros2:ci
       - name: tsukuchalle_host_monitor tests in the image
         run: |
-          docker run --rm --network host --ipc host --init --user 1000:1000 -e TSUKUCHALLE_UID=1000 \
+          docker run --rm --network host --ipc host --pid host --init --user 1000:1000 -e TSUKUCHALLE_UID=1000 \
             ddt-can-bridge-ros2:ci python3 -m unittest discover -s /ws/ros2/tsukuchalle_host_monitor/test -v
       - name: host_monitor of compose reads sysfs read-only and its command exists in the image
         run: |
@@ -205,7 +205,7 @@ jobs:
         run: |
           for uid in 1000 4242; do
             # The node exits 1 by design (no board), so the status is not checked; the log is.
-            docker run --rm --network host --ipc host --init --user "$uid:$uid" -e TSUKUCHALLE_UID="$uid" \
+            docker run --rm --network host --ipc host --pid host --init --user "$uid:$uid" -e TSUKUCHALLE_UID="$uid" \
               ddt-can-bridge-ros2:ci > "diff-drive-$uid.log" 2>&1 || true
             cat "diff-drive-$uid.log"
             grep -q 'expected one board, found \[\]' "diff-drive-$uid.log"

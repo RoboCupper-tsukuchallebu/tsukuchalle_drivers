@@ -144,9 +144,9 @@ Mac からはビルド機へ `ssh <ビルド機>` で入って実行します。
 scripts/deploy.sh <ロボットのSSH先> <ddt|velodyne|all>
 ```
 
-送るイメージは必須で、`ddt`（`ddt-can-bridge-ros2`）、`velodyne`（`tsukuchalle-velodyne`）、`all`（両方）のどれかを指定します。省略や未知の値は usage を出して終了 2 です。Velodyne のイメージは別なので、`ddt_diff_drive` の修正だけなら `ddt` を使います。`compose.yaml`・`config/`・`udev/` はどれを選んでも送ります。
+送るイメージは必須で、`ddt`（`ddt-can-bridge-ros2`）、`velodyne`（`tsukuchalle-velodyne`）、`all`（両方）のどれかを指定します。省略や未知の値は usage を出して終了 2 です。Velodyne のイメージは別なので、`ddt_diff_drive` の修正だけなら `ddt` を使います。`tsukuchalle-ros-tools` イメージと `compose.yaml`・`config/`・`udev/`・`dds_shm_clean.sh` はどれを選んでも送ります。
 
-ビルド、`docker save | gzip | ssh ... docker load`、`latest` タグ付け、`~/ddt-can-bridge/` への `compose.yaml`・`config/`・`udev/` の送付までを行い、最後に起動コマンドを表示します。`ddt` の圧縮後のイメージはおよそ370MBで、LAN内の1回転送です（`ddt`・`velodyne` それぞれの所要時間は実測して追記してください）。ビルド機とロボット PC の `uname -m` が違うと中止します。経路だけ試すときは、ssh で届くローカルの宛先（ビルド機自身など）を送り先にします。
+ビルド、`docker save | gzip | ssh ... docker load`、`latest` タグ付け、`~/ddt-can-bridge/` への `compose.yaml`・`config/`・`udev/`・掃除スクリプトの送付までを行い、最後に起動コマンドを表示します。`ddt` の圧縮後のイメージはおよそ370MBで、tools イメージも別に転送します（`ddt`・`velodyne` それぞれの所要時間は実測して追記してください）。ビルド機とロボット PC の `uname -m` が違うと中止します。経路だけ試すときは、ssh で届くローカルの宛先（ビルド機自身など）を送り先にします。
 
 ### 起動（ロボット PC の `~/ddt-can-bridge/`）
 
@@ -173,7 +173,7 @@ printf 'DDT_SERIAL_DEVICE=/dev/serial/by-id/usb-...\nTSUKUCHALLE_UID=0\nTSUKUCHA
 | `TSUKUCHALLE_INPUT_GID` | 995 | `joy` が `/dev/input/event*`（`root:input 0660`）を開くための数値 GID（`getent group input`。X13 は 995 で、PC ごとに違う） |
 | `TSUKUCHALLE_DDS_MODE` | 空 | `lan` にすると Mac などから見られる（下の「ROS 2 の通信範囲」） |
 
-`DDT_SERIAL_DEVICE` は必須で、未設定だと **`down`・`ps`・`logs` を含む compose のすべてのコマンド**が `required variable DDT_SERIAL_DEVICE is missing` で止まります（`.env` か `export` のどちらかで設定してください）。`scripts/deploy.sh` が送るのは `compose.yaml`・`config/`・`udev/` だけで、`.env` は上書きも削除もしません。`.env` はリポジトリには置きません（`.gitignore` 済み）。
+`DDT_SERIAL_DEVICE` は必須で、未設定だと **`down`・`ps`・`logs` を含む compose のすべてのコマンド**が `required variable DDT_SERIAL_DEVICE is missing` で止まります（`.env` か `export` のどちらかで設定してください）。`scripts/deploy.sh` は `.env` を上書きも削除もしません。`.env` はリポジトリには置きません（`.gitignore` 済み）。
 
 動かすには車輪を浮かせて、パッドで有効化します（コンテナの起動では有効化しません）。**Start で有効化、Back で無効化**します（ボタン番号は下の `/joy` で確認）。デッドマン（A）を離し、左スティックを中立に戻してから Start を押してください。そうでないと `enable ignored: ...` の警告が出て有効化しません。
 
@@ -223,7 +223,7 @@ docker compose run --rm teleop-keyboard
 
 ### Velodyne HDL-32E（LiDAR）
 
-`velodyne-driver`（UDP パケットを受ける）と `velodyne-transform`（`/velodyne_points` にする。本リポの `ros2/velodyne/tsukuchalle_velodyne` の `velodyne_pointcloud_node`。PCL を使わない自作で、式は ros-drivers の `velodyne_transform_node` と同じ）を、別イメージ `tsukuchalle-velodyne` で動かします。このイメージは ubuntu:noble に 2 つの実行ファイルと必要な .so だけを置いた最小構成で、`ros2` CLI は入っていません。ENTRYPOINT は uid と DDS の設定を確かめるだけの `/dds_check.sh`（POSIX `sh` 15 行ほど。確かめたら `exec` で消えます）だけです（`ros2 topic hz`・bag は `ros2/tools/Dockerfile` の `tsukuchalle-ros-tools` を `docker run` で使います）。送るには `scripts/deploy.sh <ロボットのSSH先> velodyne`（または `all`）を実行します。`all` はイメージを 1 つずつ送るので、2 つ目のビルドが失敗すると、1 つ目は送られて `latest` になっていますが `compose.yaml`・`udev/` は送られません。
+`velodyne-driver`（UDP パケットを受ける）と `velodyne-transform`（`/velodyne_points` にする。本リポの `ros2/velodyne/tsukuchalle_velodyne` の `velodyne_pointcloud_node`。PCL を使わない自作で、式は ros-drivers の `velodyne_transform_node` と同じ）を、別イメージ `tsukuchalle-velodyne` で動かします。このイメージは ubuntu:noble に 2 つの実行ファイルと必要な .so だけを置いた最小構成で、`ros2` CLI は入っていません。ENTRYPOINT は uid と DDS の設定を確かめるだけの `/dds_check.sh`（POSIX `sh` 15 行ほど。確かめたら `exec` で消えます）だけです（`ros2 topic hz`・bag は `ros2/tools/Dockerfile` の `tsukuchalle-ros-tools` を `docker run` で使います）。送るには `scripts/deploy.sh <ロボットのSSH先> velodyne`（または `all`）を実行します。イメージは 1 つずつ送るため、途中のビルドが失敗すると、先に送ったイメージは `latest` になりますが設定ファイルや掃除スクリプトは送られません。
 
 ```sh
 # 仮設に手で起動した 3 つ（コンテナとイメージ）を先に消す。残っていても bind は失敗せず（SO_REUSEADDR）、点群が片方にしか届かないだけでログにも出ない。
@@ -237,14 +237,12 @@ docker compose --profile velodyne up -d velodyne-driver velodyne-transform
 
 Velodyne の 2 サービスは `profiles: [velodyne]` なので、`--profile velodyne` を付けない `docker compose up -d` では起動しません（`ddt` だけ送ったロボットで velodyne のイメージを pull しに行って止まるのを避けるため）。起動済みのものへの `exec`・`logs`・`ps`・`stop` は profile 無しで通りますが、**`down` は `--profile velodyne` を付けないと Velodyne のコンテナが残ります**。
 
-確認は `ros2 topic hz`（jazzy では best-effort 固定）で足ります。tools イメージはロボット PC でビルドし、**ホストのログインユーザーの uid で**起動します（`--user` を忘れると root になり、`/dds_check.sh` が止めます。`-e TSUKUCHALLE_UID` を付けないと uid の検査は飛ぶので、例には必ず付けます）。
+確認は `ros2 topic hz`（jazzy では best-effort 固定）で足ります。tools イメージは deploy で送り、ロボット PC で**ホストのログインユーザーの uid で**起動します（`--user` を忘れると root になり、`/dds_check.sh` が止めます。`-e TSUKUCHALLE_UID` を付けないと uid の検査は飛ぶので、例には必ず付けます）。
 
 ```sh
-# deploy.sh の `tools` 選択肢は別 PR。リポ root で:
-docker build -f ros2/tools/Dockerfile -t tsukuchalle-ros-tools .
-docker run --rm --network host --ipc host --user "$(id -u):$(id -g)" -e TSUKUCHALLE_UID="$(id -u)" \
+docker run --rm --network host --ipc host --pid host --user "$(id -u):$(id -g)" -e TSUKUCHALLE_UID="$(id -u)" \
   tsukuchalle-ros-tools ros2 topic hz /velodyne_points                 # 10 Hz 前後（欠けると 10 を大きく下回る）
-docker run --rm --network host --ipc host --user "$(id -u):$(id -g)" -e TSUKUCHALLE_UID="$(id -u)" \
+docker run --rm --network host --ipc host --pid host --user "$(id -u):$(id -g)" -e TSUKUCHALLE_UID="$(id -u)" \
   tsukuchalle-ros-tools bash -c \
   "timeout 10 ros2 topic echo --qos-reliability reliable --qos-durability volatile --field header.frame_id /velodyne_points | grep -c velodyne"   # reliable は 10 秒で 100 前後
 ```
@@ -348,9 +346,8 @@ root のコンテナが作った `fastrtps_*` は `/dev/shm`（1777、sticky）�
 ```sh
 # 1. 全 compose プロジェクト（本リポ・datagnss・description・pointcloud）を止める。velodyne は --profile velodyne も付ける
 docker compose --profile velodyne --profile keyboard down
-# 2. tools イメージを用意し、root 所有の残骸を掃除する（全プロジェクト停止後）
-docker build -f ros2/tools/Dockerfile -t tsukuchalle-ros-tools .
-TSUKUCHALLE_UID=0 TSUKUCHALLE_GID=0 ros2/tools/dds_shm_clean.sh
+# 2. deploy 済みの tools イメージで root 所有の残骸を掃除する（全プロジェクト停止後）
+TSUKUCHALLE_UID=0 TSUKUCHALLE_GID=0 ~/ddt-can-bridge/dds_shm_clean.sh
 # 3. 各 .env の TSUKUCHALLE_UID=0 / TSUKUCHALLE_GID=0 を消す（または 1000 にする）
 # 4. 全部起動し、所有者が全部ログインユーザーであることを確かめる
 docker compose up -d drive joy teleop mux && docker compose --profile velodyne up -d velodyne-driver velodyne-transform
@@ -361,7 +358,7 @@ docker compose exec drive id -u               # 1000
 #### RAM と `/dev/shm`
 
 - SHM のセグメントは**プロセス（Context）ごと**に 1 つで、確保時に `memset` するので RAM を実際に使います。1 プロセスあたり約 17,564,192 B（16 MiB ＋ 約 0.75 MiB）です。`ros2` の daemon や CLI を 1 回起動するたびにも 1 つ増えます。
-- X13 の常時プロセス ≈ 15 で約 250 MiB（`/dev/shm` は 3.5 GiB の tmpfs）。`df /dev/shm` と `ls -la /dev/shm` で合計を照合します。コンテナを kill すると `fastrtps_*` が残ることがあります。**ROS 稼働中は `/dev/shm` を消さないでください。** 全 ROS コンテナを止めてから `ros2/tools/dds_shm_clean.sh` で掃除します。`--dry-run` で実行内容を確認できます。スクリプトは既知の ROS イメージと、他リポを含むすべての Compose プロジェクトの稼働中コンテナがあれば停止します。Compose 外の他の ROS プロセスも手動で止めてください。tools イメージがなければ上記の `docker build` で用意します。`TSUKUCHALLE_UID` / `TSUKUCHALLE_GID` は ROS と同じ値を環境変数で指定し、省略時は 1000 です。掃除中に ROS を起動しないでください。
+- X13 の常時プロセス ≈ 15 で約 250 MiB（`/dev/shm` は 3.5 GiB の tmpfs）。`df /dev/shm` と `ls -la /dev/shm` で合計を照合します。コンテナを kill すると `fastrtps_*` が残ることがあります。**ROS 稼働中は `/dev/shm` を消さないでください。** 全 ROS コンテナを止めてから `~/ddt-can-bridge/dds_shm_clean.sh` で掃除します。`--dry-run` で実行内容を確認できます。スクリプトは既知の ROS イメージと、他リポを含むすべての Compose プロジェクトの稼働中コンテナがあれば停止します。Compose 外の他の ROS プロセスも手動で止めてください。tools イメージやスクリプトがなければ、ビルド機から deploy して用意します。`TSUKUCHALLE_UID` / `TSUKUCHALLE_GID` は ROS と同じ値を環境変数で指定し、省略時は 1000 です。掃除中に ROS を起動しないでください。
 - `--ipc host` の無いコンテナ（1 コンテナに participant が 4 つ以上）は `--shm-size=256m` 以上を必須にします。`/dev/shm` が小さい（Docker の既定 64 MiB や 32m）と SHM の作成に失敗して ERROR（`Failed to create segment` / `Unable to Register SHM Transport`）を出し、**SHM なしで続行します**。プロセスは落ちず、点群は UDP の `lo` に回って黙って劣化します（欠けが戻る）。ログに上の ERROR が出たら `--shm-size` を疑ってください。
 
 #### Mac から見る（`TSUKUCHALLE_DDS_MODE=lan`）

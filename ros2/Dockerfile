@@ -9,7 +9,7 @@ FROM ros:jazzy-ros-base-noble@sha256:8eed0a4669bbf43ee331878a4c39bd8ebddea8e3312
 # from the XML and ROS_AUTOMATIC_DISCOVERY_RANGE=SYSTEM_DEFAULT, not from LOCALHOST: LOCALHOST makes
 # rmw_fastrtps add a default 512 KiB SHM transport after reading the XML. (Its UDP listens on all
 # interfaces; it stays off the LAN only because it has no multicast and its peer is 127.0.0.1.)
-# Containers need `ipc: host` and `network_mode: host` (compose does; `docker run` needs `--ipc host`).
+# Containers need `ipc: host`, `pid: host` and `network_mode: host` (compose does; `docker run` needs `--ipc host --pid host`).
 # SHM files in /dev/shm belong to the uid that made them (0644, umask does not help), so every ROS
 # process on the host must run as the same uid (compose `user:`, TSUKUCHALLE_UID); /dds_check.sh stops a
 # mismatch. ROS_LOG_DIR / ROS_HOME are under /tmp because uid 1000 cannot write to / or a missing HOME.

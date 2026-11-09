@@ -2,12 +2,12 @@
 # Run on the build machine inside the clone. Builds the committed tree and ships it to the robot PC.
 # Usage: scripts/deploy.sh <robot-ssh-destination> <ddt|velodyne|all>
 # The image choice is required: the velodyne image carries PCL, so ddt-only changes should not ship it.
-# With "all", images are shipped one by one: if the second build fails, the first image is already
-# loaded and tagged latest on the robot, but compose.yaml and udev/ are not sent yet.
+# The tools image is always shipped for diagnostics and SHM cleanup. Images are shipped one by one;
+# if a later build fails, earlier images are already latest, but files are not sent yet.
 set -euo pipefail
 
 if [ "$#" -ne 2 ] || [[ "$1" == -* ]]; then
-    echo "usage: $0 <robot-ssh-destination> <ddt|velodyne|all>" >&2
+    printf "usage: %s <robot-ssh-destination> <ddt|velodyne|all>\nThe tools image and cleanup script are always shipped.\n" "$0" >&2
     exit 2
 fi
 robotTarget="$1"
@@ -16,7 +16,7 @@ case "$2" in
     velodyne) imageSelections=(velodyne) ;;
     all)      imageSelections=(ddt velodyne) ;;
     *)
-        echo "usage: $0 <robot-ssh-destination> <ddt|velodyne|all>" >&2
+        printf "usage: %s <robot-ssh-destination> <ddt|velodyne|all>\nThe tools image and cleanup script are always shipped.\n" "$0" >&2
         exit 2
         ;;
 esac
@@ -36,23 +36,28 @@ if [ "${buildArchitecture}" != "${robotArchitecture}" ]; then
     exit 1
 fi
 
+imageSelections+=(tools)
 deployedImages=()
 for imageSelection in "${imageSelections[@]}"; do
     case "${imageSelection}" in
         ddt)      imageName="ddt-can-bridge-ros2";  dockerfilePath="ros2/Dockerfile" ;;
         velodyne) imageName="tsukuchalle-velodyne"; dockerfilePath="ros2/velodyne/Dockerfile" ;;
+        tools)    imageName="tsukuchalle-ros-tools"; dockerfilePath="ros2/tools/Dockerfile" ;;
     esac
     docker build -f "${dockerfilePath}" -t "${imageName}:${imageTag}" .
     docker save "${imageName}:${imageTag}" | gzip | ssh "${robotTarget}" "gunzip | docker load"
+    # Image names and SHA are set locally and intentionally expanded before SSH.
+    # shellcheck disable=SC2029
     ssh "${robotTarget}" "docker tag ${imageName}:${imageTag} ${imageName}:latest"
     deployedImages+=("${imageName}:${imageTag}")
 done
 
 ssh "${robotTarget}" "mkdir -p ~/ddt-can-bridge"
-scp -r ros2/compose.yaml ros2/config scripts/udev "${robotTarget}:~/ddt-can-bridge/"
+scp -r ros2/compose.yaml ros2/config scripts/udev ros2/tools/dds_shm_clean.sh "${robotTarget}:~/ddt-can-bridge/"
+ssh "${robotTarget}" "chmod +x ~/ddt-can-bridge/dds_shm_clean.sh"
 
 cat <<MESSAGE
-deployed ${deployedImages[*]} (also latest) and compose files, udev rules to ${robotTarget}:~/ddt-can-bridge/
+deployed ${deployedImages[*]} (also latest) and compose files, udev rules, cleanup script to ${robotTarget}:~/ddt-can-bridge/
 On the robot PC:
   sudo bash ~/ddt-can-bridge/udev/install.sh   # udev rules (first time, or after changing them)
   cd ~/ddt-can-bridge
