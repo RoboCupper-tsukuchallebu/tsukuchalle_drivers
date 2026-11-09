@@ -134,7 +134,7 @@ pixi run ros2 param set /diff_drive_node max_wheel_rpm 50.0
 
 ## ロボット PC で動かす（Docker）
 
-ロボット PC には pixi を入れず、Docker イメージで `drive`（ノード）、`joy`（ジョイスティック）、`teleop`（`/joy` から `/cmd_vel`）を動かします。Mac では実機を運転できません（Mac の Docker は arm64 で、ビルドと試験のみ）。
+ロボット PC には pixi を入れず、Docker イメージで `drive`（ノード）、`joy`（ジョイスティック）、`teleop`（`/joy` から `/cmd_vel_teleop`）と `mux` を動かします。Mac では実機を運転できません（Mac の Docker は arm64 で、ビルドと試験のみ）。
 
 ### 配布（ビルド機で実行）
 
@@ -154,7 +154,7 @@ scripts/deploy.sh <ロボットのSSH先> <ddt|velodyne|all>
 # 初回だけ。.env は compose が自動で読むので、別のシェルや再ログインの後でも ps・down・logs・exec が通る
 # TSUKUCHALLE_UID/GID=0 は他リポが uid 1000 になるまでの暫定（省略不可。下の説明）
 printf 'DDT_SERIAL_DEVICE=/dev/serial/by-id/usb-...\nTSUKUCHALLE_UID=0\nTSUKUCHALLE_GID=0\n' > ~/ddt-can-bridge/.env
-docker compose up -d drive joy teleop                # この時点ではモーターは無効
+docker compose up -d drive joy teleop mux                # この時点ではモーターは無効
 ```
 
 **deploy（`scripts/deploy.sh` とその後の `up`）の前に `.env` を書いてください。** 既定の uid は 1000 ですが、全リポ（datagnss・description/foxglove・pointcloud・nav-stack）を uid 1000 に切り替えるまでは、X13 でも `TSUKUCHALLE_UID=0` と `TSUKUCHALLE_GID=0` を書きます（**省略不可**。省略すると本リポだけ uid 1000 になり、root のままの他リポのコンテナとの間で点群などが黙って 0 受信になります）。切り替えの手順は下の「ROS 2 の通信範囲と実行 uid」です。
@@ -183,12 +183,14 @@ printf 'DDT_SERIAL_DEVICE=/dev/serial/by-id/usb-...\nTSUKUCHALLE_UID=0\nTSUKUCHA
 docker compose exec drive /ws/ros2/docker-entrypoint.sh ros2 service call /diff_drive_node/enable std_srvs/srv/SetBool "{data: true}"
 ```
 
-`enable_button`（初期値は0番、Xbox系のA）を**押している間だけ**、左スティックの上下で前後、左右で旋回します。離すと止まります。無効化は Back、`data: false`、またはコンテナの停止です。
+`enable_button`（初期値は0番、Xbox系のA）を**押している間だけ**、左スティックの上下で前後、左右で旋回します。離すと teleop はゼロを一度送り、約 0.5 秒後には nav の指令があれば走行を再開します。確実に停止するには Back で無効化してください。無効化は Back、`data: false`、またはコンテナの停止です。
 
 ```sh
 docker compose logs -f drive teleop     # 状態の確認
 docker compose stop                     # SIGTERMで停止処理（DISABLE）を実行（Ctrl-Cや down でも同じ）
 ```
+
+ナビゲーションと同時に手動走行できます。drivers が `/cmd_vel` を所有し、drive はここだけを購読します。nav-stack は `/cmd_vel_nav`、ジョイスティックとキーボードは `/cmd_vel_teleop` に発行します。`mux` は teleop（優先度 100）を nav（優先度 10）より優先し、各入力のタイムアウトは 0.5 秒です。デッドマンを押している間は nav のゼロ指令も手動操縦を妨げません。解除後に nav が動作中なら、タイムアウト後に自律走行が再開します。両入力が途絶えると drive の指令タイムアウトが停止します。nav-stack をこの契約に合わせて変更してから併用してください。
 
 キーボードで動かすときは、ジョイスティックの代わりに次を使います。
 
@@ -325,7 +327,7 @@ sudo rm -f /dev/shm/fastrtps_*
 ls -la /dev/shm | grep -c fastrtps            # 0
 # 3. 各 .env の TSUKUCHALLE_UID=0 / TSUKUCHALLE_GID=0 を消す（または 1000 にする）
 # 4. 全部起動し、所有者が全部ログインユーザーであることを確かめる
-docker compose up -d drive joy teleop && docker compose --profile velodyne up -d velodyne-driver velodyne-transform
+docker compose up -d drive joy teleop mux && docker compose --profile velodyne up -d velodyne-driver velodyne-transform
 ls -la /dev/shm | grep fastrtps               # 所有者は全部ログインユーザー（1000）
 docker compose exec drive id -u               # 1000
 ```
