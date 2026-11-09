@@ -8,8 +8,10 @@ x-ros-common: &ros-common
   image: ddt-can-bridge-ros2:${DDT_IMAGE_TAG:-latest}
   network_mode: host
   # Fast DDS shared memory between processes on one host does not cross containers unless they
-  # share the IPC namespace. The Fast DDS settings (XML, SYSTEM_DEFAULT) are the image's ENV.
+  # share the IPC namespace. All ROS containers also share the host PID namespace.
+  # The Fast DDS settings (XML, SYSTEM_DEFAULT) are the image's ENV.
   ipc: host
+  pid: host
   # Numeric ids: the image has no user of this uid, and group_add needs ids that exist on the host.
   # /dds_check.sh stops the container when `id -u` differs from TSUKUCHALLE_UID.
   user: "${TSUKUCHALLE_UID:-1000}:${TSUKUCHALLE_GID:-1000}"
