@@ -78,8 +78,15 @@ jobs:
       # ros2/dds/: the Fast DDS profile and the uid check are in every image, in front of every command.
       - name: shellcheck (dds_check.sh must stay POSIX sh)
         run: |
-          shellcheck -s sh ros2/dds/dds_check.sh ros2/dds/test_dds_check.sh
+          shellcheck -s sh ros2/dds/dds_check.sh ros2/dds/test_dds_check.sh ros2/tools/dds_shm_clean.sh ros2/dds/test_dds_shm_clean.sh
           shellcheck -s bash ros2/dds/check_image.sh
+      - name: DDS cleanup guard tests
+        run: ros2/dds/test_dds_shm_clean.sh
+      - name: All Compose services share host IPC and PID namespaces
+        run: |
+          export DDT_SERIAL_DEVICE=/dev/null
+          docker compose -f ros2/compose.yaml --profile "*" config --format json |
+            jq -e '.services | length > 0 and all(.[]; .ipc == "host" and .pid == "host")'
       - name: dds_check.sh on this machine
         run: ros2/dds/test_dds_check.sh
       - name: DDS files, ENV and ENTRYPOINT of the runtime and tools images

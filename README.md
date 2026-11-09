@@ -267,7 +267,7 @@ docker compose exec host_monitor /ws/ros2/docker-entrypoint.sh ros2 topic echo -
 
 | 項目 | 内容 |
 |---|---|
-| サービス | `host_monitor`（`/sys/class/power_supply` を read-only でマウント。`user`・`ipc: host`・`network_mode: host` は他のサービスと同じ） |
+| サービス | `host_monitor`（`/sys/class/power_supply` を read-only でマウント。`user`・`ipc: host`・`pid: host`・`network_mode: host` は他のサービスと同じ） |
 | 出すもの | `/diagnostics`（`diagnostic_msgs/DiagnosticArray`、1 Hz）。DiagnosticStatus は 1 つで `name` は `host: battery`、`hardware_id` は電池名（`BAT0` など） |
 | 購読するもの | なし |
 
@@ -321,7 +321,7 @@ level: 放電中（`status` が `Discharging`）で残量が `battery_error_perc
 - 全イメージ（`ros2/Dockerfile`、`ros2/velodyne/Dockerfile` の `runtime`、`ros2/tools/Dockerfile`）に `ros2/dds/fastdds_profiles.xml` を `/fastdds_profiles.xml` として焼き込み、ENV は `ROS_DOMAIN_ID=42`・`ROS_AUTOMATIC_DISCOVERY_RANGE=SYSTEM_DEFAULT`・`FASTRTPS_DEFAULT_PROFILES_FILE=/fastdds_profiles.xml`・`ROS_LOG_DIR=/tmp/ros_log`・`ROS_HOME=/tmp/ros_home` です。`FASTDDS_BUILTIN_TRANSPORTS` と `LOCALHOST` は使いません。
 - XML の中身: 共有メモリ（SHM）のセグメントを **16 MiB / プロセス**、UDPv4 は `127.0.0.1` だけ（`maxInitialPeersRange 32`）、多播なし、`initialPeersList` は `127.0.0.1`。同じホストの別コンテナと SHM でつながり、**同じ LAN の別 PC には見えません**。`LOCALHOST` のままのコンテナ（他リポで未更新のもの）とも混在できます。
 - 以前の `LOCALHOST` は、rmw_fastrtps が XML を読んだ**後に** 512 KiB の既定 SHM を足すため、1.5 MB の `/velodyne_points`（約 24 断片）が best-effort で欠けました（断片 1 つで 1 フレームを失う）。reliable は再送されるので欠けません。LOCALHOST の UDP は全インターフェースで開きますが、LAN に出ないのは多播を作らず peer が `127.0.0.1` だけのためです。
-- `ipc: host` と `network_mode: host` は全コンテナの前提です（compose が付けます。`docker run` は `--ipc host --network host`）。`ipc: host` が無いと SHM が使えません。
+- `ipc: host`・`pid: host`・`network_mode: host` は全 ROS コンテナの前提です（compose が付けます。`docker run` は `--ipc host --pid host --network host`）。`ipc: host` が無いと SHM が使えません。
 - XML と `ros2/dds/dds_check.sh` は他リポ（datagnss・description・pointcloud）と nav-stack に複製します。正は本リポで、複製は sha256 で照合します（`fastdds_profiles.xml` の先頭コメントに「変えるときは tsukuchalle_drivers を先に」）。
 
 #### 起動時の検査（`/dds_check.sh`）
@@ -348,10 +348,9 @@ root のコンテナが作った `fastrtps_*` は `/dev/shm`（1777、sticky）�
 ```sh
 # 1. 全 compose プロジェクト（本リポ・datagnss・description・pointcloud）を止める。velodyne は --profile velodyne も付ける
 docker compose --profile velodyne --profile keyboard down
-# 2. 残骸を消し、root 所有が 0 であることを確かめる（ホストに fastdds CLI は無い。tools イメージの `fastdds shm clean` でも可）
-ls -la /dev/shm | grep fastrtps
-sudo rm -f /dev/shm/fastrtps_*
-ls -la /dev/shm | grep -c fastrtps            # 0
+# 2. tools イメージを用意し、root 所有の残骸を掃除する（全プロジェクト停止後）
+docker build -f ros2/tools/Dockerfile -t tsukuchalle-ros-tools .
+TSUKUCHALLE_UID=0 TSUKUCHALLE_GID=0 ros2/tools/dds_shm_clean.sh
 # 3. 各 .env の TSUKUCHALLE_UID=0 / TSUKUCHALLE_GID=0 を消す（または 1000 にする）
 # 4. 全部起動し、所有者が全部ログインユーザーであることを確かめる
 docker compose up -d drive joy teleop mux && docker compose --profile velodyne up -d velodyne-driver velodyne-transform
@@ -362,7 +361,7 @@ docker compose exec drive id -u               # 1000
 #### RAM と `/dev/shm`
 
 - SHM のセグメントは**プロセス（Context）ごと**に 1 つで、確保時に `memset` するので RAM を実際に使います。1 プロセスあたり約 17,564,192 B（16 MiB ＋ 約 0.75 MiB）です。`ros2` の daemon や CLI を 1 回起動するたびにも 1 つ増えます。
-- X13 の常時プロセス ≈ 15 で約 250 MiB（`/dev/shm` は 3.5 GiB の tmpfs）。`df /dev/shm` と `ls -la /dev/shm` で合計を照合します。コンテナを kill すると `fastrtps_*` が残ることがあるので、増え続けるときは全部止めて `sudo rm -f /dev/shm/fastrtps_*` です。
+- X13 の常時プロセス ≈ 15 で約 250 MiB（`/dev/shm` は 3.5 GiB の tmpfs）。`df /dev/shm` と `ls -la /dev/shm` で合計を照合します。コンテナを kill すると `fastrtps_*` が残ることがあります。**ROS 稼働中は `/dev/shm` を消さないでください。** 全 ROS コンテナを止めてから `ros2/tools/dds_shm_clean.sh` で掃除します。`--dry-run` で実行内容を確認できます。スクリプトは既知の ROS イメージと、他リポを含むすべての Compose プロジェクトの稼働中コンテナがあれば停止します。Compose 外の他の ROS プロセスも手動で止めてください。tools イメージがなければ上記の `docker build` で用意します。`TSUKUCHALLE_UID` / `TSUKUCHALLE_GID` は ROS と同じ値を環境変数で指定し、省略時は 1000 です。掃除中に ROS を起動しないでください。
 - `--ipc host` の無いコンテナ（1 コンテナに participant が 4 つ以上）は `--shm-size=256m` 以上を必須にします。`/dev/shm` が小さい（Docker の既定 64 MiB や 32m）と SHM の作成に失敗して ERROR（`Failed to create segment` / `Unable to Register SHM Transport`）を出し、**SHM なしで続行します**。プロセスは落ちず、点群は UDP の `lo` に回って黙って劣化します（欠けが戻る）。ログに上の ERROR が出たら `--shm-size` を疑ってください。
 
 #### Mac から見る（`TSUKUCHALLE_DDS_MODE=lan`）
