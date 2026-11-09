@@ -258,7 +258,7 @@ docker run --rm --network host --ipc host --user "$(id -u):$(id -g)" -e TSUKUCHA
 
 ### ロボット PC の電池（`host_monitor`）
 
-ロボット PC の電池の状態を `/diagnostics` に出します。`ddt` のイメージ（`ddt-can-bridge-ros2`）に入っているパッケージ `tsukuchalle_host_monitor`（`ros2/tsukuchalle_host_monitor`）で、`drive` と同じイメージを使うので追加の deploy は要りません（`scripts/deploy.sh <ロボットのSSH先> ddt`）。`/sys/class/power_supply` を読むだけで、モーター・駆動系の topic は購読も発行もしません。
+ロボット PC の電池の状態を `/diagnostics` に出します。`ddt` のイメージ（`ddt-can-bridge-ros2`）に入っているパッケージ `tsukuchalle_host_monitor`（`ros2/tsukuchalle_host_monitor`）で、`drive` と同じイメージを使うので追加の deploy は要りません（`scripts/deploy.sh <ロボットのSSH先> ddt`）。`/sys/class/power_supply` を読み、電池ガードも実行します。モーター・駆動系の topic は購読も発行もしません。
 
 ```sh
 docker compose up -d host_monitor
@@ -294,6 +294,25 @@ level: 放電中（`status` が `Discharging`）で残量が `battery_error_perc
 | `battery_error_percent` | 10.0 | 放電中、この残量以下で ERROR（`0 <= error <= warn <= 100`。外れると起動しない） |
 
 値を変えるときは `ros2/tsukuchalle_host_monitor/config/host_monitor.yaml` を直し、`scripts/deploy.sh <ロボットのSSH先> ddt` で配ります（イメージに焼き込まれます）。試験は `make` では走りません。`pixi run test`、またはイメージの中で `docker run --rm ddt-can-bridge-ros2:<タグ> python3 -m unittest discover -s /ws/ros2/tsukuchalle_host_monitor/test` を実行します（CI の `ddt-image` も同じ）。
+
+### 電池ガード
+
+放電中に残量が 5 % 以下になると、電池の診断を ERROR にし、`/system/low_battery`（`std_msgs/Bool`、reliable・transient local、depth 1）に true を出します。警告解除時は false を出します。3 % 以下では一度だけ `/lightnav/mission/pause`（`std_srvs/Trigger`）を呼び、localization の `mode` が `mapping` と確認できた場合に `/localization_node/save_map`（同型）を呼びます。サービスの発見と応答はそれぞれ最大 2 秒待ち、失敗やタイムアウトはログに記録します。地図の保存に成功すると nav-stack は mapping の記録を停止します。
+
+警告は AC 接続時または残量が警告しきい値＋ヒステリシスを超えたときに解除します。危険時の処理は AC 接続時または危険しきい値＋ヒステリシスを超えたときに再アームします。電池や残量が読めない場合は新たな動作を起こしません。`alarm_command` はシェルを使わず非同期に実行し、前のプロセスが動いている間は再起動しません。
+
+| パラメータ | 初期値 | 内容 |
+|---|---|---|
+| `low_battery_warn_percent` | 5.0 | 警告の残量 % |
+| `critical_battery_percent` | 3.0 | 一時停止と地図保存を試みる残量 % |
+| `hysteresis_percent` | 2.0 | 解除・再アームに必要な上昇幅 |
+| `alarm_period_s` | 30.0 | アラーム起動の最短間隔（秒） |
+| `alarm_command` | 空 | 空なら無効。音声が使えるようになったら設定 |
+| `mission_pause_service` | `/lightnav/mission/pause` | mission 一時停止サービス |
+| `save_map_service` | `/localization_node/save_map` | 地図保存サービス |
+| `localization_node` | `/localization_node` | `mode` を取得するノード |
+
+設定例: `alarm_command: "some-audio-command low-battery"`。利用可能な音声コマンドに置き換えてください。
 
 ### ROS 2 の通信範囲と実行 uid
 
