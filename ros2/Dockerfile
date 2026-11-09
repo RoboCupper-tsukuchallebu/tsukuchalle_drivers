@@ -26,6 +26,7 @@ RUN apt-get update \
         ros-jazzy-joy \
         ros-jazzy-teleop-twist-joy \
         ros-jazzy-teleop-twist-keyboard \
+        ros-jazzy-twist-mux \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /ws

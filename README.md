@@ -69,7 +69,7 @@ python3 host/ddt_bridge.py /dev/cu.usbmodemXXXX run 10 10 --seconds 2
 
 ## ROS 2
 
-`/cmd_vel`（`geometry_msgs/Twist`）を左右の車輪速度へ変換するノードです。ROS 2 JazzyをRoboStack（pixi）で動かします。
+入力の `geometry_msgs/Twist` を左右の車輪速度へ変換するノードです。ノードの購読名は相対名 `cmd_vel` で、drive の入力は pixi 単体では `/cmd_vel`、compose では `/cmd_vel_mux` にリマップされます。ROS 2 JazzyをRoboStack（pixi）で動かします。
 
 ```sh
 pixi install
@@ -100,7 +100,7 @@ pixi run ros2 param set /diff_drive_node max_wheel_rpm 50.0
 | `left_sign` / `right_sign` | 1 / -1 | 前進時の回転方向。有効化中は変更不可 |
 | `max_wheel_rpm` | 100.0 | 車輪の最大速度（上限210）。飽和時は左右の比を保つ |
 | `max_acceleration_rpm_per_s` | 100.0 | 加減速の制限 |
-| `command_timeout_s` | 0.5 | `/cmd_vel` が途絶えたら目標を0へ（上限5秒）。減速は200rpm/s以上 |
+| `command_timeout_s` | 0.5 | drive の入力が途絶えたら目標を0へ（上限5秒）。減速は200rpm/s以上 |
 | `joy_enable_button` | 7 | `/joy` でこのボタンを押すと有効化（Start を仮定）。押した瞬間だけ反応し、デッドマンかスティックが中立でないと拒否。-1 でパッドからの有効化だけ無効（無効化は生きる） |
 | `joy_disable_button` | 6 | このボタンを押すと無効化（Back を仮定）。常に効く。`joy_enable_button` が 0 以上なら -1 不可 |
 | `joy_deadman_button` | 0 | `teleop_twist_joy.yaml` の `enable_button` と同じ番号にする。押している間は有効化しない |
@@ -108,7 +108,7 @@ pixi run ros2 param set /diff_drive_node max_wheel_rpm 50.0
 | `auto_reenable_wait_s` | 10.0 | USB 切断から復帰した後、デッドマンが離されスティックが中立になるのを待つ最大秒数。超えたら無効のまま。`joy_node` の `autorepeat_rate` が 0 より大きいことが前提（0 だと操作していない間 `/joy` が来ず、必ず諦める） |
 | `publish_tf` | true | TF `odom` → `base_footprint` を出す。実行中に変更可（bool 以外は拒否）。`/wheel/odom` は常に出す |
 
-3つのボタン番号は互いに異なる必要があります。最初に届いた `/joy`、および 0.5 秒以上途絶えた後の最初の `/joy` は、有効化の「押した瞬間」とみなしません（Start を押したまま `joy` を再起動したり、パッドを挿し直したりしても有効化されません。無効化は途絶後でも効きます）。この判定は `joy_node` の `autorepeat_rate` が 0 より大きいことが前提です（初期値は 20 Hz）。`joy_deadman_button: -1` や `joy_neutral_axes: []` にすると、その確認は黙って外れます。無効化の後は、基板が `DISABLED` になるまで `/cmd_vel` を捨て、`DISABLE` を送り直し、1.5 秒たっても `DISABLED` にならなければ `disable not confirmed` を ERROR で出します。
+3つのボタン番号は互いに異なる必要があります。最初に届いた `/joy`、および 0.5 秒以上途絶えた後の最初の `/joy` は、有効化の「押した瞬間」とみなしません（Start を押したまま `joy` を再起動したり、パッドを挿し直したりしても有効化されません。無効化は途絶後でも効きます）。この判定は `joy_node` の `autorepeat_rate` が 0 より大きいことが前提です（初期値は 20 Hz）。`joy_deadman_button: -1` や `joy_neutral_axes: []` にすると、その確認は黙って外れます。無効化の後は、基板が `DISABLED` になるまで drive の入力を捨て、`DISABLE` を送り直し、1.5 秒たっても `DISABLED` にならなければ `disable not confirmed` を ERROR で出します。
 
 ノードは実行中の変更を受け付けますが、ファイルには保存しません。確定した値は `ros2/ddt_diff_drive/config/diff_drive.yaml` に書いてください。`pixi run drive` はこのファイルを直接読みます。
 
@@ -134,7 +134,7 @@ pixi run ros2 param set /diff_drive_node max_wheel_rpm 50.0
 
 ## ロボット PC で動かす（Docker）
 
-ロボット PC には pixi を入れず、Docker イメージで `drive`（ノード）、`joy`（ジョイスティック）、`teleop`（`/joy` から `/cmd_vel`）を動かします。Mac では実機を運転できません（Mac の Docker は arm64 で、ビルドと試験のみ）。
+ロボット PC には pixi を入れず、Docker イメージで `drive`（ノード）、`joy`（ジョイスティック）、`teleop`（`/joy` から `/cmd_vel_teleop`）と `mux` を動かします。Mac では実機を運転できません（Mac の Docker は arm64 で、ビルドと試験のみ）。
 
 ### 配布（ビルド機で実行）
 
@@ -154,7 +154,7 @@ scripts/deploy.sh <ロボットのSSH先> <ddt|velodyne|all>
 # 初回だけ。.env は compose が自動で読むので、別のシェルや再ログインの後でも ps・down・logs・exec が通る
 # TSUKUCHALLE_UID/GID=0 は他リポが uid 1000 になるまでの暫定（省略不可。下の説明）
 printf 'DDT_SERIAL_DEVICE=/dev/serial/by-id/usb-...\nTSUKUCHALLE_UID=0\nTSUKUCHALLE_GID=0\n' > ~/ddt-can-bridge/.env
-docker compose up -d drive joy teleop                # この時点ではモーターは無効
+docker compose up -d drive joy teleop mux                # この時点ではモーターは無効
 ```
 
 **deploy（`scripts/deploy.sh` とその後の `up`）の前に `.env` を書いてください。** 既定の uid は 1000 ですが、全リポ（datagnss・description/foxglove・pointcloud・nav-stack）を uid 1000 に切り替えるまでは、X13 でも `TSUKUCHALLE_UID=0` と `TSUKUCHALLE_GID=0` を書きます（**省略不可**。省略すると本リポだけ uid 1000 になり、root のままの他リポのコンテナとの間で点群などが黙って 0 受信になります）。切り替えの手順は下の「ROS 2 の通信範囲と実行 uid」です。
@@ -183,11 +183,21 @@ printf 'DDT_SERIAL_DEVICE=/dev/serial/by-id/usb-...\nTSUKUCHALLE_UID=0\nTSUKUCHA
 docker compose exec drive /ws/ros2/docker-entrypoint.sh ros2 service call /diff_drive_node/enable std_srvs/srv/SetBool "{data: true}"
 ```
 
-`enable_button`（初期値は0番、Xbox系のA）を**押している間だけ**、左スティックの上下で前後、左右で旋回します。離すと止まります。無効化は Back、`data: false`、またはコンテナの停止です。
+`enable_button`（初期値は0番、Xbox系のA）を**押している間だけ**、左スティックの上下で前後、左右で旋回します。離すと teleop はゼロを一度送り、約 0.5 秒後には nav の指令があれば走行を再開します。確実に停止するには Back で無効化してください。無効化は Back、`data: false`、またはコンテナの停止です。
 
 ```sh
 docker compose logs -f drive teleop     # 状態の確認
 docker compose stop                     # SIGTERMで停止処理（DISABLE）を実行（Ctrl-Cや down でも同じ）
+```
+
+ナビゲーションと同時に手動走行できます。nav-stack は変更せず /cmd_vel に発行し、ジョイスティックとキーボードは /cmd_vel_teleop に発行します。mux は teleop（優先度 100）を nav（優先度 10）より優先し、各入力のタイムアウトは 0.5 秒です。出力は /cmd_vel_mux で、compose の drive はこれを購読します。ほかの /cmd_vel 発行元も nav 入力として mux を経由しなければ drive に届きません。デッドマンを押している間は nav のゼロ指令も手動操縦を妨げません。解除後に nav が動作中なら、タイムアウト後に自律走行が再開します。両入力が途絶えると mux の発行が止まり、drive の指令タイムアウトで停止します。
+
+mux の構成と優先動作の試験は、イメージをビルドした Linux マシンのリポジトリ root で実行します。構成試験には Python の PyYAML と Docker Compose が必要です。
+
+```sh
+python3 ros2/tests/test_mux_config.py
+docker run --rm --network none --ipc private --shm-size 256m -e ROS_DOMAIN_ID=83 \
+  -v "$PWD:/test:ro" ddt-can-bridge-ros2:mux python3 /test/ros2/tests/test_mux_behavior.py
 ```
 
 キーボードで動かすときは、ジョイスティックの代わりに次を使います。
@@ -325,7 +335,7 @@ sudo rm -f /dev/shm/fastrtps_*
 ls -la /dev/shm | grep -c fastrtps            # 0
 # 3. 各 .env の TSUKUCHALLE_UID=0 / TSUKUCHALLE_GID=0 を消す（または 1000 にする）
 # 4. 全部起動し、所有者が全部ログインユーザーであることを確かめる
-docker compose up -d drive joy teleop && docker compose --profile velodyne up -d velodyne-driver velodyne-transform
+docker compose up -d drive joy teleop mux && docker compose --profile velodyne up -d velodyne-driver velodyne-transform
 ls -la /dev/shm | grep fastrtps               # 所有者は全部ログインユーザー（1000）
 docker compose exec drive id -u               # 1000
 ```
