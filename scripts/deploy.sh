@@ -64,7 +64,7 @@ if [[ " ${imageSelections[*]} " == *" ddt "* ]]; then
     cat <<'MESSAGE'
 Drive (wheels lifted):
   export DDT_SERIAL_DEVICE=/dev/serial/by-id/usb-...
-  docker compose up -d drive joy teleop
+  docker compose up -d drive joy teleop mux
   docker compose exec drive /ws/ros2/docker-entrypoint.sh ros2 service call /diff_drive_node/enable std_srvs/srv/SetBool "{data: true}"
 MESSAGE
 fi

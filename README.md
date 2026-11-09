@@ -69,7 +69,7 @@ python3 host/ddt_bridge.py /dev/cu.usbmodemXXXX run 10 10 --seconds 2
 
 ## ROS 2
 
-`/cmd_vel`（`geometry_msgs/Twist`）を左右の車輪速度へ変換するノードです。ROS 2 JazzyをRoboStack（pixi）で動かします。
+入力の `geometry_msgs/Twist` を左右の車輪速度へ変換するノードです。ノードの購読名は相対名 `cmd_vel` で、drive の入力は pixi 単体では `/cmd_vel`、compose では `/cmd_vel_mux` にリマップされます。ROS 2 JazzyをRoboStack（pixi）で動かします。
 
 ```sh
 pixi install
@@ -100,7 +100,7 @@ pixi run ros2 param set /diff_drive_node max_wheel_rpm 50.0
 | `left_sign` / `right_sign` | 1 / -1 | 前進時の回転方向。有効化中は変更不可 |
 | `max_wheel_rpm` | 100.0 | 車輪の最大速度（上限210）。飽和時は左右の比を保つ |
 | `max_acceleration_rpm_per_s` | 100.0 | 加減速の制限 |
-| `command_timeout_s` | 0.5 | `/cmd_vel` が途絶えたら目標を0へ（上限5秒）。減速は200rpm/s以上 |
+| `command_timeout_s` | 0.5 | drive の入力が途絶えたら目標を0へ（上限5秒）。減速は200rpm/s以上 |
 | `joy_enable_button` | 7 | `/joy` でこのボタンを押すと有効化（Start を仮定）。押した瞬間だけ反応し、デッドマンかスティックが中立でないと拒否。-1 でパッドからの有効化だけ無効（無効化は生きる） |
 | `joy_disable_button` | 6 | このボタンを押すと無効化（Back を仮定）。常に効く。`joy_enable_button` が 0 以上なら -1 不可 |
 | `joy_deadman_button` | 0 | `teleop_twist_joy.yaml` の `enable_button` と同じ番号にする。押している間は有効化しない |
@@ -108,7 +108,7 @@ pixi run ros2 param set /diff_drive_node max_wheel_rpm 50.0
 | `auto_reenable_wait_s` | 10.0 | USB 切断から復帰した後、デッドマンが離されスティックが中立になるのを待つ最大秒数。超えたら無効のまま。`joy_node` の `autorepeat_rate` が 0 より大きいことが前提（0 だと操作していない間 `/joy` が来ず、必ず諦める） |
 | `publish_tf` | true | TF `odom` → `base_footprint` を出す。実行中に変更可（bool 以外は拒否）。`/wheel/odom` は常に出す |
 
-3つのボタン番号は互いに異なる必要があります。最初に届いた `/joy`、および 0.5 秒以上途絶えた後の最初の `/joy` は、有効化の「押した瞬間」とみなしません（Start を押したまま `joy` を再起動したり、パッドを挿し直したりしても有効化されません。無効化は途絶後でも効きます）。この判定は `joy_node` の `autorepeat_rate` が 0 より大きいことが前提です（初期値は 20 Hz）。`joy_deadman_button: -1` や `joy_neutral_axes: []` にすると、その確認は黙って外れます。無効化の後は、基板が `DISABLED` になるまで `/cmd_vel` を捨て、`DISABLE` を送り直し、1.5 秒たっても `DISABLED` にならなければ `disable not confirmed` を ERROR で出します。
+3つのボタン番号は互いに異なる必要があります。最初に届いた `/joy`、および 0.5 秒以上途絶えた後の最初の `/joy` は、有効化の「押した瞬間」とみなしません（Start を押したまま `joy` を再起動したり、パッドを挿し直したりしても有効化されません。無効化は途絶後でも効きます）。この判定は `joy_node` の `autorepeat_rate` が 0 より大きいことが前提です（初期値は 20 Hz）。`joy_deadman_button: -1` や `joy_neutral_axes: []` にすると、その確認は黙って外れます。無効化の後は、基板が `DISABLED` になるまで drive の入力を捨て、`DISABLE` を送り直し、1.5 秒たっても `DISABLED` にならなければ `disable not confirmed` を ERROR で出します。
 
 ノードは実行中の変更を受け付けますが、ファイルには保存しません。確定した値は `ros2/ddt_diff_drive/config/diff_drive.yaml` に書いてください。`pixi run drive` はこのファイルを直接読みます。
 
