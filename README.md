@@ -190,7 +190,15 @@ docker compose logs -f drive teleop     # 状態の確認
 docker compose stop                     # SIGTERMで停止処理（DISABLE）を実行（Ctrl-Cや down でも同じ）
 ```
 
-ナビゲーションと同時に手動走行できます。drivers が `/cmd_vel` を所有し、drive はここだけを購読します。nav-stack は `/cmd_vel_nav`、ジョイスティックとキーボードは `/cmd_vel_teleop` に発行します。`mux` は teleop（優先度 100）を nav（優先度 10）より優先し、各入力のタイムアウトは 0.5 秒です。デッドマンを押している間は nav のゼロ指令も手動操縦を妨げません。解除後に nav が動作中なら、タイムアウト後に自律走行が再開します。両入力が途絶えると drive の指令タイムアウトが停止します。nav-stack をこの契約に合わせて変更してから併用してください。
+ナビゲーションと同時に手動走行できます。nav-stack は変更せず /cmd_vel に発行し、ジョイスティックとキーボードは /cmd_vel_teleop に発行します。mux は teleop（優先度 100）を nav（優先度 10）より優先し、各入力のタイムアウトは 0.5 秒です。出力は /cmd_vel_mux で、compose の drive はこれを購読します。ほかの /cmd_vel 発行元も nav 入力として mux を経由しなければ drive に届きません。デッドマンを押している間は nav のゼロ指令も手動操縦を妨げません。解除後に nav が動作中なら、タイムアウト後に自律走行が再開します。両入力が途絶えると mux の発行が止まり、drive の指令タイムアウトで停止します。
+
+mux の構成と優先動作の試験は、イメージをビルドした Linux マシンのリポジトリ root で実行します。構成試験には Python の PyYAML と Docker Compose が必要です。
+
+```sh
+python3 ros2/tests/test_mux_config.py
+docker run --rm --network none --ipc private --shm-size 256m -e ROS_DOMAIN_ID=83 \
+  -v "$PWD:/test:ro" ddt-can-bridge-ros2:mux python3 /test/ros2/tests/test_mux_behavior.py
+```
 
 キーボードで動かすときは、ジョイスティックの代わりに次を使います。
 

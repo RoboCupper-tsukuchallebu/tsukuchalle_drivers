@@ -118,11 +118,11 @@ stateDiagram-v2
 
 ## 8. ROS 2ノード
 
-`ros2/ddt_diff_drive` の `diff_drive_node` は `/cmd_vel` を受け、50Hzで `SET_VELOCITY` を送る。
+`ros2/ddt_diff_drive` の `diff_drive_node` は既定で `/cmd_vel` を受け、50Hzで `SET_VELOCITY` を送る。compose では入力を `/cmd_vel_mux` にリマップし、手動とナビゲーションの指令を mux で選択する。
 
 ```mermaid
 flowchart LR
-    T["/cmd_vel<br>Twist"] --> K["twist_to_wheels<br>寸法から換算、左右比を保って飽和"]
+    T["/cmd_vel（compose: /cmd_vel_mux）<br>Twist"] --> K["twist_to_wheels<br>寸法から換算、左右比を保って飽和"]
     K --> R["limit_rate<br>加減速制限 50Hz"]
     R --> M["to_motor_rpm<br>左右割り当て、符号"]
     M -->|"SET_VELOCITY"| F["RP2350-CAN"]
@@ -132,7 +132,7 @@ flowchart LR
 - 起動時は無効で、`~/enable` を呼ぶまで指令を送らない。
 - `/joy` のボタンでも `~/enable` 相当を行う（立ち上がり検出、デッドマンと中立の条件つき、有効化の待ちは制御タイマで行いブロックしない）。無効化は条件なし。
 - 基板の USB 切断は再接続し、有効だった場合は中立（デッドマンを離しスティックが中立）を待って再有効化する（上限なし、毎回ログ）。ファーム側の停止は手動。
-- `/cmd_vel` が `command_timeout_s` 途絶えると、加減速制限に従って0へ下げる。
+- 入力指令が `command_timeout_s` 途絶えると、加減速制限に従って0へ下げる。
 - ファームが停止したら出力を0に戻す。再開には `~/enable` が必要で、0から加速する。
 - モーター内部に速度ループがあるので、ROS側に速度PIDは持たない。
 - ノードが落ちた場合はファームの指令タイムアウト（200ms）で止まる。

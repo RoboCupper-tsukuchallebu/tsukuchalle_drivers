@@ -43,6 +43,8 @@ services:
       - /ws/install/ddt_diff_drive/share/ddt_diff_drive/config/diff_drive.yaml
       - -p
       - "port:=${DDT_SERIAL_DEVICE:?set DDT_SERIAL_DEVICE to /dev/serial/by-id/usb-...}"
+      - -r
+      - cmd_vel:=/cmd_vel_mux
 
   # Moves only while enable_button is held. Swap the mapping by editing config/teleop_twist_joy.yaml.
   teleop:
@@ -66,7 +68,7 @@ services:
       - --params-file
       - /config/twist_mux.yaml
       - -r
-      - cmd_vel_out:=/cmd_vel
+      - cmd_vel_out:=/cmd_vel_mux
     volumes:
       - ./config/twist_mux.yaml:/config/twist_mux.yaml:ro
 
