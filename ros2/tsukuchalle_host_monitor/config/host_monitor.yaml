@@ -6,3 +6,13 @@ host_monitor_node:
     # Discharging only: at or below these percentages the status is WARN / ERROR.
     battery_warn_percent: 20.0
     battery_error_percent: 10.0
+
+    low_battery_warn_percent: 5.0
+    critical_battery_percent: 3.0
+    hysteresis_percent: 2.0
+    alarm_period_s: 30.0
+    # ロボットの音声が使えるようになったら音声コマンドを設定する。
+    alarm_command: ""
+    mission_pause_service: /lightnav/mission/pause
+    save_map_service: /localization_node/save_map
+    localization_node: /localization_node
