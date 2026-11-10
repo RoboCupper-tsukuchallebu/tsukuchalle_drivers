@@ -15,7 +15,7 @@ chmod +x "$tmp/docker"
 PATH="$tmp:$PATH"; export PATH
 MOCK_LOG="$tmp/run"; export MOCK_LOG
 script=$root/ros2/tools/dds_shm_clean.sh
-for row in "$(printf 'ros\tddt-can-bridge-ros2:latest\t')" "$(printf 'other\tcustom-image\tother-project')" "$(printf 'ros\tregistry/tsukuchalle-velodyne:tag\t')" "$(printf 'tools\ttsukuchalle-ros-tools\t')"; do
+for row in "$(printf 'ros\tddt-can-bridge-ros2:latest\t')" "$(printf 'other\tcustom-image\tother-project')" "$(printf 'ros\tregistry/tsukuchalle-velodyne:tag\t')" "$(printf 'tools\ttsukuchalle-ros-tools\t')" "$(printf 'nav\tlightnav:latest\t')" "$(printf 'misc\tbusybox\t')"; do
   if MOCK_PS=$row "$script" > "$tmp/out" 2>&1; then echo 'Expected refusal' >&2; exit 1; fi
   grep -F "$(printf '%s' "$row" | cut -f1)" "$tmp/out" >/dev/null
   test ! -e "$MOCK_LOG"

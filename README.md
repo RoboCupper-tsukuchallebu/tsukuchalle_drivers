@@ -358,7 +358,7 @@ docker compose exec drive id -u               # 1000
 #### RAM と `/dev/shm`
 
 - SHM のセグメントは**プロセス（Context）ごと**に 1 つで、確保時に `memset` するので RAM を実際に使います。1 プロセスあたり約 17,564,192 B（16 MiB ＋ 約 0.75 MiB）です。`ros2` の daemon や CLI を 1 回起動するたびにも 1 つ増えます。
-- X13 の常時プロセス ≈ 15 で約 250 MiB（`/dev/shm` は 3.5 GiB の tmpfs）。`df /dev/shm` と `ls -la /dev/shm` で合計を照合します。コンテナを kill すると `fastrtps_*` が残ることがあります。**ROS 稼働中は `/dev/shm` を消さないでください。** 全 ROS コンテナを止めてから `~/ddt-can-bridge/dds_shm_clean.sh` で掃除します。`--dry-run` で実行内容を確認できます。スクリプトは既知の ROS イメージと、他リポを含むすべての Compose プロジェクトの稼働中コンテナがあれば停止します。Compose 外の他の ROS プロセスも手動で止めてください。tools イメージやスクリプトがなければ、ビルド機から deploy して用意します。`TSUKUCHALLE_UID` / `TSUKUCHALLE_GID` は ROS と同じ値を環境変数で指定し、省略時は 1000 です。掃除中に ROS を起動しないでください。
+- X13 の常時プロセス ≈ 15 で約 250 MiB（`/dev/shm` は 3.5 GiB の tmpfs）。`df /dev/shm` と `ls -la /dev/shm` で合計を照合します。コンテナを kill すると `fastrtps_*` が残ることがあります。**ROS 稼働中は `/dev/shm` を消さないでください。** 全 ROS コンテナを止めてから `~/ddt-can-bridge/dds_shm_clean.sh` で掃除します。`--dry-run` で実行内容を確認できます。スクリプトは、稼働中のコンテナが 1 つでもあれば（ROS かどうか、Compose かどうかを問わず）止まります。Compose 外の他の ROS プロセスも手動で止めてください。tools イメージやスクリプトがなければ、ビルド機から deploy して用意します。`TSUKUCHALLE_UID` / `TSUKUCHALLE_GID` は ROS と同じ値を環境変数で指定し、省略時は 1000 です。掃除中に ROS を起動しないでください。
 - `--ipc host` の無いコンテナ（1 コンテナに participant が 4 つ以上）は `--shm-size=256m` 以上を必須にします。`/dev/shm` が小さい（Docker の既定 64 MiB や 32m）と SHM の作成に失敗して ERROR（`Failed to create segment` / `Unable to Register SHM Transport`）を出し、**SHM なしで続行します**。プロセスは落ちず、点群は UDP の `lo` に回って黙って劣化します（欠けが戻る）。ログに上の ERROR が出たら `--shm-size` を疑ってください。
 
 #### Mac から見る（`TSUKUCHALLE_DDS_MODE=lan`）
