@@ -17,7 +17,7 @@ from geometry_msgs.msg import Twist
 from nav_msgs.msg import Odometry
 from rclpy.executors import SingleThreadedExecutor
 from rclpy.parameter import Parameter
-from sensor_msgs.msg import Joy
+from sensor_msgs.msg import JointState, Joy
 from std_srvs.srv import SetBool
 from tf2_msgs.msg import TFMessage
 
@@ -1005,6 +1005,77 @@ class WheelOdometryTest(NodeTestBase):
         self.feed_forward()
         self.assertTrue(self.call_enable(True).success)
         with mock.patch.object(self.node._odometry._odom_publisher, "publish",
+                               side_effect=RuntimeError("boom")):
+            self.spin_for(0.5, forward_twist())
+        first, second = self.firmware.velocities[-1]
+        self.assertGreater(first, 10)
+        self.assertEqual(second, -first)
+
+
+CURRENT_RAW_FULL_SCALE = 32767
+CURRENT_FULL_SCALE_AMPS = 33.0
+
+
+class MotorStateTest(NodeTestBase):
+    def setUp(self):
+        super().setUp()
+        self.motor_states = []
+        self.client_node.create_subscription(JointState, "/wheel/motor_states",
+                                             self.motor_states.append, 50)
+        motor_state_publisher = self.node._motor_states._publisher
+        deadline = time.monotonic() + 5.0
+        while motor_state_publisher.get_subscription_count() == 0 and time.monotonic() < deadline:
+            self.executor.spin_once(timeout_sec=0.01)
+        self.spin_for(0.2)
+
+    def test_publishes_nothing_without_feedback(self):
+        self.spin_for(0.3)
+        self.assertEqual(self.motor_states, [])
+
+    def test_reports_raw_speed_and_current_of_both_motors_while_disabled(self):
+        self.firmware.start_feedback(1, 60, current_raw=CURRENT_RAW_FULL_SCALE // 33)
+        self.firmware.start_feedback(2, -30, current_raw=-(CURRENT_RAW_FULL_SCALE // 66))
+        self.spin_for(1.0)
+        self.assertGreaterEqual(len(self.motor_states), MIN_MESSAGES_PER_SECOND // 2)
+        last = self.motor_states[-1]
+        self.assertEqual(list(last.name), ["motor_1", "motor_2"])
+        self.assertAlmostEqual(last.velocity[0], 2.0 * math.pi, places=6)
+        self.assertAlmostEqual(last.velocity[1], -math.pi, places=6)
+        self.assertAlmostEqual(last.effort[0], (CURRENT_RAW_FULL_SCALE // 33) * CURRENT_FULL_SCALE_AMPS
+                               / CURRENT_RAW_FULL_SCALE, places=6)
+        self.assertLess(last.effort[1], 0.0)
+        self.assertEqual(list(last.position), [0.0, 0.0])
+        self.assertEqual(self.firmware.velocities, [])  # Publishing telemetry sends no motor command.
+
+    def test_stamps_increase_and_stay_close_to_the_node_clock(self):
+        self.firmware.start_feedback(1, 10)
+        self.firmware.start_feedback(2, -10)
+        self.spin_for(0.5)
+        stamps = [message.header.stamp.sec + message.header.stamp.nanosec * 1e-9
+                  for message in self.motor_states]
+        self.assertGreater(len(stamps), 5)
+        self.assertEqual(stamps, sorted(stamps))
+        now_seconds = self.node.get_clock().now().nanoseconds * 1e-9
+        self.assertLess(abs(now_seconds - stamps[-1]), 0.5)
+
+    def test_a_silent_motor_is_left_out_and_silence_of_both_stops_the_topic(self):
+        self.firmware.start_feedback(1, 10)
+        self.firmware.start_feedback(2, -10)
+        self.spin_for(0.3)
+        self.firmware.stop_feedback(1)
+        self.spin_for(0.4)
+        self.assertEqual(list(self.motor_states[-1].name), ["motor_2"])
+        self.firmware.stop_feedback(2)
+        self.spin_for(0.3)
+        count_after_silence = len(self.motor_states)
+        self.spin_for(0.3)
+        self.assertEqual(len(self.motor_states), count_after_silence)
+
+    def test_failing_motor_state_publisher_does_not_stop_the_drive(self):
+        self.firmware.start_feedback(1, 60)
+        self.firmware.start_feedback(2, -60)
+        self.assertTrue(self.call_enable(True).success)
+        with mock.patch.object(self.node._motor_states._publisher, "publish",
                                side_effect=RuntimeError("boom")):
             self.spin_for(0.5, forward_twist())
         first, second = self.firmware.velocities[-1]

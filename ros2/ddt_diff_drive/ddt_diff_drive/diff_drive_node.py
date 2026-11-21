@@ -41,6 +41,7 @@ from ddt_diff_drive.kinematics import (
     twist_to_wheels,
     validation_error,
 )
+from ddt_diff_drive.motor_state_publisher import MotorStatePublisher
 from ddt_diff_drive.odometry_publisher import OdometryPublisher
 from ddt_diff_drive.telemetry import BridgeTelemetry
 
@@ -206,6 +207,7 @@ class DiffDriveNode(Node):
         self._telemetry = BridgeTelemetry()
         self._odometry = OdometryPublisher(self, lambda: self._config)
         self._odometry.is_tf_enabled = self.get_parameter("publish_tf").value
+        self._motor_states = MotorStatePublisher(self, self._telemetry)
         self._bridge = LoggingBridge(self._port, self.get_logger(), self._telemetry, self._odometry)
         self._connection = CONNECTED
         self._was_enabled = False  # The motors were on when the board was lost.
@@ -637,6 +639,7 @@ class DiffDriveNode(Node):
             self._handle_lost_board(error)
         finally:
             self._odometry.publish()
+            self._motor_states.publish()
 
 
 def main() -> None:
