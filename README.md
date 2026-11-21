@@ -132,6 +132,24 @@ pixi run ros2 param set /diff_drive_node max_wheel_rpm 50.0
 
 `track_width_m` の校正: その場で車体を実角度 θ_true（例: 床のマークで 1 回転 = 2π）だけ回し、`/wheel/odom` の yaw を積算した値 θ_odom を読みます（回転の途中で ±π を跨ぐので、差分を足し合わせる）。補正後のトレッドは `track_width_m × θ_odom / θ_true` です。値は `tsukuchalle_description` の `config/dimensions.yaml` を先に直し、本リポの `diff_drive.yaml` を合わせます。
 
+## モーターの生データ（`/wheel/motor_states`）
+
+基板から届く各モーターのフィードバックを、加工せずに `/wheel/motor_states`（`sensor_msgs/JointState`）に出します。記録と解析のための出力で、読むだけです（シリアルにもモーターへの指令にも触りません）。
+
+| 項目 | 中身 |
+|---|---|
+| `name` | `motor_1`、`motor_2`（モーター ID の順。左右の割り当ては `left_motor_id`） |
+| `velocity` | 回転速度 [rad/s]。フィードバックの rpm を換算した値（1 rpm 刻み） |
+| `effort` | **電流 [A]**（トルクではありません。`JointState` に電流の欄が無いための代用です） |
+| `position` | エンコーダの角度 [rad]（1 回転の中の 0〜2π。回転数は数えません） |
+| `header.stamp` | いちばん新しいフィードバックを受け取った時刻 |
+
+- 符号は**モーターそのまま**です（車輪の前進方向には直していません。既定の配線では、前進で `motor_1` が正、`motor_2` が負）。前進・旋回に直した値は `/wheel/odom` の twist を見てください。
+- 出版は制御タイマ（50 Hz）で、前回の出版以降に新しいフィードバックがあれば出します。無効化（DISABLED）中でも 24V が入っていれば出ます。
+- 0.1 秒より古いモーターは、そのメッセージから外します。両方とも途絶えると出版が止まります。
+- フィードバックの `fault` と `mode` は入っていません（`fault` はこれまでどおりログに出ます）。
+- 出版に失敗しても、走行の制御は止まりません（ログに `motor state publish failed` を出します）。
+
 ## ロボット PC で動かす（Docker）
 
 ロボット PC には pixi を入れず、Docker イメージで `drive`（ノード）、`joy`（ジョイスティック）、`teleop`（`/joy` から `/cmd_vel_teleop`）と `mux` を動かします。Mac では実機を運転できません（Mac の Docker は arm64 で、ビルドと試験のみ）。
