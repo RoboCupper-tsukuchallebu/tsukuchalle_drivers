@@ -9,6 +9,10 @@ endif()
 
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
+# The exported teleop_twist_joy target links these (transitive, already in the image); find them first.
+find_package(rclcpp_components REQUIRED)
+find_package(geometry_msgs REQUIRED)
+find_package(sensor_msgs REQUIRED)
 find_package(teleop_twist_joy REQUIRED)
 
 add_executable(limited_teleop_node src/limited_teleop_node.cpp)
