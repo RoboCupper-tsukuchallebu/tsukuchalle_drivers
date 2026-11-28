@@ -233,7 +233,7 @@ class StartupCheckTest(unittest.TestCase):
                 with self.subTest(key=key, value=label):
                     def mutate(parameters, key=key, name=name, value=value):
                         if value is None:
-                            del parameters[key][name]
+                            del parameters[key]
                         else:
                             parameters[key][name] = value
                     self.assert_refuses(mutate, expected)
