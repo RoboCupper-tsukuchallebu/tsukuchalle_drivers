@@ -32,8 +32,8 @@ RUN apt-get update \
 WORKDIR /ws
 COPY host host
 COPY ros2 ros2
-# ros2/velodyne/ holds a package of the Velodyne image; this image builds ddt_diff_drive and tsukuchalle_host_monitor.
-RUN . /opt/ros/jazzy/setup.sh && colcon build --base-paths ros2 --packages-select ddt_diff_drive tsukuchalle_host_monitor
+# ros2/velodyne/ holds a package of the Velodyne image; this image builds ddt_diff_drive, tsukuchalle_host_monitor and tsukuchalle_teleop.
+RUN . /opt/ros/jazzy/setup.sh && colcon build --base-paths ros2 --packages-select ddt_diff_drive tsukuchalle_host_monitor tsukuchalle_teleop
 
 # Last, so editing them does not rebuild the layers above.
 COPY --chmod=0644 ros2/dds/fastdds_profiles.xml /fastdds_profiles.xml

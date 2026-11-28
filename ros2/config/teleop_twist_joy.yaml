@@ -14,5 +14,12 @@ teleop_twist_joy_node:
       yaw: 0                     # left stick, left/right
     scale_angular:
       yaw: 1.5                   # rad/s at full stick
+    # Upper limits of scale_linear.x and scale_angular.yaw (read-only; limited_teleop_node refuses any
+    # runtime setting above them). Changing these is a safety-relevant change (AGENTS.md): raising them
+    # to 1.5 m/s and 4.0 rad/s is tsukuchalle_drivers#39. Provisional values, equal to the speeds above.
+    scale_linear_limit:
+      x: 0.6                     # m/s
+    scale_angular_limit:
+      yaw: 1.5                   # rad/s
     inverted_reverse: false
     publish_stamped_twist: false
