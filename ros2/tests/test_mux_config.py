@@ -31,10 +31,16 @@ class MuxConfigTest(unittest.TestCase):
                                ('teleop', 'cmd_vel:=/cmd_vel_teleop'),
                                ('teleop-keyboard', 'cmd_vel:=/cmd_vel_teleop')]:
             self.assertIn(remap, services[service]['command'])
+        teleop_command = services['teleop']['command']
+        self.assertEqual(teleop_command[0],
+                         '/ws/install/tsukuchalle_teleop/lib/tsukuchalle_teleop/limited_teleop_node')
+        self.assertIn('/config/teleop_twist_joy.yaml', teleop_command)
         image = os.environ.get('DDT_TEST_IMAGE', 'ddt-can-bridge-ros2:mux')
         subprocess.run(['docker', 'run', '--rm', '--network', 'none', '--ipc', 'private',
                         '--entrypoint', 'test', image, '-x',
                         '/opt/ros/jazzy/lib/twist_mux/twist_mux'], check=True)
+        subprocess.run(['docker', 'run', '--rm', '--network', 'none', '--ipc', 'private',
+                        '--entrypoint', 'test', image, '-x', teleop_command[0]], check=True)
 
 
 if __name__ == '__main__':

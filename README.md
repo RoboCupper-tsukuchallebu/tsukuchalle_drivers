@@ -230,6 +230,16 @@ docker compose run --rm teleop-keyboard
 - `DDT_SERIAL_DEVICE` は `/dev/serial/by-id/usb-...` か `/dev/ddt_board`（下の udev ルールの symlink）を指定してください。`/dev/ttyACM0` を固定で指定すると、再列挙で `ttyACM1` になったときに永久に再接続できません。`drive` は `/dev` を丸ごと見る（`devices:` は作成時に固定され、再列挙に追従できないため）ので、`joy` と同様に専用のロボット PC を前提にしています。`/dev` は再帰的に見えるため、ホストの `/dev/pts`・`/dev/ptmx` にもコンテナの root から届きます。
 - ModemManager が動いていると、挿した直後の `ttyACM` に AT コマンドを送ることがあります。ノードの排他ロック（TIOCEXCL）は open 後にしか効きません。`mmcli -L` と `journalctl -u ModemManager` で確認し、症状が出たら `sudo systemctl mask --now ModemManager` してください。再列挙のたびにプローブされると、再接続が `EBUSY` になったり、AT コマンドが基板に流れたりします。`reconnect failed` が続くときも mask してください。
 
+#### 手動走行の上限（`limited_teleop_node`）
+
+`teleop` は `limited_teleop_node`（`ros2/tsukuchalle_teleop`。配布の `teleop_twist_joy` に検査を足しただけ）で動きます。上限は `config/teleop_twist_joy.yaml` の `scale_linear_limit.x`（0.6 m/s）・`scale_angular_limit.yaw`（1.5 rad/s）で、**仮の値**です。上げるのは tsukuchalle_drivers#39 で、変えるのは安全に関わる変更（AGENTS.md）です。
+
+- 実行中に変えられるのは `scale_linear.x` と `scale_angular.yaw` だけです（小数で、0 より大きく、上限以下。外れた値は拒まれ、前の値のまま）。ほかのパラメータの変更はすべて拒まれます。割り当てを変えるときは設定ファイルを直して `teleop` を起動し直します。
+- 起動のときに、上限が無い・0 以下、初期値が (0, 上限] の外、`require_enable_button: false`、`enable_turbo_button` が 0 以上、直進と旋回以外の倍率（ターボ側含む）が 0 でない、のどれかに当たると、理由を出して終了します（`restart: "no"` なので `teleop` は止まったままで、**その間は手動で割り込めません**）。`docker compose logs teleop` で理由を見て、設定ファイルを直し、`docker compose up -d --force-recreate teleop` で起動し直します。
+- 起動し直すと、実行中に変えた値は捨てられ、設定ファイルの値に戻ります。
+- **このイメージを古い版（上限の無い `teleop`）に戻すときは、先に tsukuchalle_description の許可を戻すか、書き込み用のブリッジ（`foxglove_write`）を止めてください。** 許可が残ったままだと、上限の無い `teleop` にどんな値でも書けてしまいます。
+- 試験: `docker run --rm --network none --ipc private --shm-size 256m -e ROS_DOMAIN_ID=84 -v "$PWD:/test:ro" --entrypoint /ws/ros2/docker-entrypoint.sh ddt-can-bridge-ros2:<タグ> python3 /test/ros2/tests/test_teleop_limit.py`
+
 ### udev ルール（シリアル機器の symlink）
 
 `scripts/udev/70-tsukuchalle.rules` が、RP2350-CAN を `/dev/ddt_board`、DATAGNSS MA-10P を `/dev/ma10p_nmea`（if00）・`/dev/ma10p_info`（if02）にし、`dialout` 0660 と ModemManager 除外（`ID_MM_DEVICE_IGNORE=1`）を付けます。シリアル番号で 1 台ずつ指定しています。

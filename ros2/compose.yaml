@@ -49,10 +49,12 @@ services:
       - cmd_vel:=/cmd_vel_mux
 
   # Moves only while enable_button is held. Swap the mapping by editing config/teleop_twist_joy.yaml.
+  # limited_teleop_node is teleop_twist_joy plus a speed limit (scale_*_limit in the config file); it exits
+  # at startup if the config breaks the limit, and restart is "no", so teleop then stays down.
   teleop:
     <<: *ros-common
     command:
-      - /opt/ros/jazzy/lib/teleop_twist_joy/teleop_node
+      - /ws/install/tsukuchalle_teleop/lib/tsukuchalle_teleop/limited_teleop_node
       - --ros-args
       - --params-file
       - /config/teleop_twist_joy.yaml

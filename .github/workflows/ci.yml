@@ -198,6 +198,20 @@ jobs:
             and ([.volumes[] | select(.target == "/sys/class/power_supply" and .read_only == true)] | length == 1)' <<< "$config"
           executable=$(jq -r '.services.host_monitor.command[0]' <<< "$config")
           docker run --rm --entrypoint test ddt-can-bridge-ros2:ci -x "$executable"
+      - name: tsukuchalle_teleop (speed limit) tests in an isolated container
+        run: |
+          docker run --rm --network none --ipc private --shm-size 256m -e ROS_DOMAIN_ID=84 --user 1000:1000 \
+            -e TSUKUCHALLE_UID=1000 -v "$PWD:/test:ro" --entrypoint /ws/ros2/docker-entrypoint.sh \
+            ddt-can-bridge-ros2:ci python3 /test/ros2/tests/test_teleop_limit.py -v
+      - name: teleop of compose runs limited_teleop_node, which exists in the image and starts as uid 1000
+        run: |
+          export DDT_SERIAL_DEVICE=/dev/null
+          executable=$(docker compose -f ros2/compose.yaml config --format json | jq -r '.services.teleop.command[0]')
+          docker run --rm --entrypoint test ddt-can-bridge-ros2:ci -x "$executable"
+          docker run --rm --network none --ipc private --user 1000:1000 -e TSUKUCHALLE_UID=1000 \
+            -v "$PWD/ros2/config:/config:ro" ddt-can-bridge-ros2:ci "$executable" --ros-args \
+            --params-file /config/teleop_twist_joy.yaml > teleop-start.log 2>&1 & sleep 5; cat teleop-start.log
+          grep -q 'speed limits:' teleop-start.log
       # No `port` and no board: the node gets as far as its own "expected one board" error, which comes after
       # rcl made its log directory. 4242 has no passwd entry, so there is no HOME: this fails if ROS_LOG_DIR /
       # ROS_HOME are not set in the image (1000 is the real case; the base image's `ubuntu` user hides it).
